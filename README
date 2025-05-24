@@ -1,0 +1,39 @@
+# 🚤 ABoat — ESP32-Based Smart Boat Controller
+
+**A project by Andrey Shamis**  
+Autonomous and remote-controlled boat platform based on **ESP32**, with integrated **MPU9250**, **TinyGPS++**, and **FlySky PPM input**.
+
+---
+
+## 📦 Features
+
+- ✅ Dual ESC motor control (left/right)
+- ✅ Rudder servo control with trim and angle logic
+- ✅ PPM (FlySky) input with channel reading
+- ✅ GPS parsing with TinyGPS++
+- ✅ Orientation tracking via **MPU9250** + **Fusion/Madgwick AHRS**
+- ✅ State machine logic for motor control
+- ✅ Modular structure (rudder, motor, flysky, settings)
+- ✅ PlatformIO-ready
+
+---
+
+## 🧠 Hardware Used
+
+- ESP32 board (Heltec Stick Lite v3)
+- MPU9250 9-axis IMU
+- Neo-6M or similar GPS module (UART)
+- FlySky FS-iA10B (PPM on pin 23)
+- 2x ESCs (PWM control)
+- Rudder servo
+- Power supply: 2–3S Li-Ion
+
+---
+
+## 🚀 Getting Started
+
+### 1. Clone the project
+
+```bash
+git clone git@github.com:AndreyShamis/aboat.git
+cd aboat
