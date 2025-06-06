@@ -12,8 +12,35 @@ const int maxSameAngleCycles = 10;
 int targetRudderPwm = -1;
 int currentRudderPwm = -1;
 unsigned long lastRudderStepTime = 0;
-const int rudderStepInterval = 10;  // мс между шагами
+const int rudderStepInterval = 5;  // мс между шагами
 const int rudderStepSize = 10;      // шаг в микросекундах
+
+
+void setupRudderPwm() {
+  rudder.setPeriodHertz(60);
+  rudder.attach(RUDDER, 1000, 2000);  // pin, min, max pulse width in microseconds
+  Serial.println("✅ RUDDER attached using ESP32Servo");
+// bool ok = ledcSetup(RUDDER_PWM_CHANNEL, RUDDER_PWM_FREQ, RUDDER_PWM_RES);
+// if (!ok) {
+//   Serial.println("❌ ledcSetup failed for RUDDER");
+// }
+// ledcAttachPin(RUDDER, RUDDER_PWM_CHANNEL);
+
+}
+
+void writeRudderMicroseconds(int us) {
+  // Переводим длительность импульса в значение duty для ledcWrite
+  // int maxDuty = (1 << RUDDER_PWM_RES) - 1; // например, 2^16 - 1 = 65535
+  // int duty = map(us, 1000, 2000, maxDuty * 5 / 20, maxDuty * 10 / 20);  // ~5%–10% от 20мс периода
+  // duty = constrain(duty, 0, maxDuty);
+  // ledcWrite(RUDDER_PWM_CHANNEL, duty);
+  // Serial.printf("[PWM]set RUD: %d - Tar: %d\n",currentRudderPwm, duty);
+  us = constrain(us, 1000, 2000);
+  rudder.writeMicroseconds(us);
+  //Serial.printf("[PWM]set RUD: %d μs\n", us);  
+}
+
+
 
 void updateRudder() {
   if (targetRudderPwm < 0 || currentRudderPwm < 0) return;
@@ -31,10 +58,15 @@ void updateRudder() {
         Serial.printf("[PWM]RUD: %d - Tar: %d\n",currentRudderPwm, targetRudderPwm);
         lastDbg = millis();
       }
-      rudder.writeMicroseconds(currentRudderPwm);
+      if (currentRudderPwm != lastRudderPwm) {
+      writeRudderMicroseconds(currentRudderPwm);
+      Serial.printf("[PWM]RUD: %d - Tar: %d\n",currentRudderPwm, targetRudderPwm);
+      }
+
     }
   }
 }
+
 
 
 
@@ -55,6 +87,7 @@ void setRudderAngle(int angle) {
   if (currentRudderPwm < 0) {
     // первый запуск — устанавливаем сразу
     currentRudderPwm = pwmValue;
-    rudder.writeMicroseconds(pwmValue);
+    writeRudderMicroseconds(pwmValue);
+    Serial.printf("[PWM]RUD: %d - Tar: %d\n",currentRudderPwm, targetRudderPwm);
   }
 }
