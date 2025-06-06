@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
-#include "rudder.h"
 #include "settings.h"
 
 int leftTrim = 0;

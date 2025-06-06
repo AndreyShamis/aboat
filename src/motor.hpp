@@ -1,7 +1,21 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
-#include "motor.h"
 #include "settings.h"
+
+enum MotorState {
+  MOTOR_STOP,
+  MOTOR_FORWARD,
+  MOTOR_REVERSE
+};
+
+// ===== Gesture detection thresholds =====
+const int LOW_ZONE = 1090;
+const int HIGH_ZONE = 1910;
+
+// ===== Motor PWM range =====
+const int PWM_MIN = 1000;
+const int PWM_MAX = 1800;
+const int PWM_BROKER = 1010;
 
 
 MotorState motorState;

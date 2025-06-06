@@ -5,10 +5,10 @@
 #include "Fusion.h"
 #include <ESP32Servo.h>
 #include "settings.h"
-#include "rudder.h"
-#include "motor.h"
+#include "rudder.hpp"
+#include "motor.hpp"
 // #include "EncoderHandler.h"
-#include "fly_sky.h"
+#include "fly_sky.hpp"
 #include "Boat.hpp"
 #include "temp_sensors.hpp"
 #include "oil_pump.hpp"

@@ -1,5 +1,19 @@
-#include "fly_sky.h"
+
+#pragma once
+
 #include "settings.h"
+#include <Arduino.h>
+#include "settings.h"
+
+
+#ifdef USE_IBUS
+#include <IBusBM.h>
+#else
+void IRAM_ATTR ppmInterrupt();
+#endif
+
+
+
 
 volatile uint16_t channels[10];
 
