@@ -1,9 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include "Boat.hpp"
 #include "settings.h"
-
-extern Boat boat;
 
 bool isOilPumpEnabled = false;
 
@@ -15,12 +12,10 @@ void setupOilPump() {
 }
 
 
-
-
-void updateOilPumpLogic() {
+void updateOilPumpLogic(float motor1Temp, float motor2Temp,float  radiatorTemp) {
   if (isOilPumpEnabled) {
-    float tMotorAvg = (boat.motor1Temp + boat.motor2Temp) / 2.0;
-    float tRad = boat.radiatorTemp;
+    float tMotorAvg = (motor1Temp + motor2Temp) / 2.0;
+    float tRad = radiatorTemp;
 
     int speed = 0;
 

@@ -1,23 +1,15 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
 #include <TinyGPS++.h>
-#include <MPU9250_asukiaaa.h>
 #include "Fusion.h"
 #include <ESP32Servo.h>
 #include "settings.h"
 #include "rudder.hpp"
 #include "motor.hpp"
-// #include "EncoderHandler.h"
-#include "fly_sky.hpp"
 #include "Boat.hpp"
-#include "temp_sensors.hpp"
-#include "oil_pump.hpp"
 #include <Adafruit_PWMServoDriver.h>
 
-FusionAhrs ahrs;
-TinyGPSPlus gps;
-MPU9250_asukiaaa mpu;
-HardwareSerial GPSserial(2);
+
 Boat boat;
 
 
@@ -34,9 +26,7 @@ static unsigned long lastChannelPrint = 0;
 const unsigned long channelPrintInterval = 200; // 2.5 секунды
 
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
-#include "voltage_current_sensor.hpp"
 
-VoltageCurrentSensor sensor(0x48); // <-- укажи адрес ADS1115
 
 
 uint16_t microsecondsToTicks(uint16_t us)
@@ -47,37 +37,15 @@ uint16_t microsecondsToTicks(uint16_t us)
 void setup()
 {
   pinMode(VextCtrl, OUTPUT);
-  digitalWrite(VextCtrl, LOW); // включить питание на Ve
-  delay(10);
+  digitalWrite(VextCtrl, HIGH); // включить питание на Ve
+
   Serial.begin(115200);
   Serial.println("\n\n\n");
   Serial.println("Boat Control System Starting...\n\n");
-  GPSserial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX); // GPS UART
-  Serial.println("Strarting setup iBUS FlySky...");
-  setupFlySky();
+  delay(1000);
+  digitalWrite(VextCtrl, LOW); // включить питание на Ve
+  delay(10);
 
-  Serial.println("Starting I2C bus scan...");
-  Wire.begin(I2C_SDA, I2C_SCL);  
-  Serial.println("Scanning I2C bus...");
-
-  for (uint8_t address = 1; address < 127; ++address)
-  {
-    Wire.beginTransmission(address);
-    if (Wire.endTransmission() == 0)
-    {
-      Serial.print("Found I2C device at 0x");
-      Serial.println(address, HEX);
-    }
-    delay(4);
-  }
-
-  mpu.setWire(&Wire);
-  mpu.beginAccel();
-  mpu.beginGyro();
-  mpu.beginMag();
-  FusionAhrsInitialise(&ahrs);
-
-  Serial.println("MPU9250 + Madgwick initialized");
   // ESCs
   escLeft.setPeriodHertz(50);
   escLeft.attach(MOTOR_LEFT, 1000, 2000);
@@ -89,14 +57,13 @@ void setup()
 
   setRudderTrim(0, 0);
   setRudderAngle(0);
-  setupTempSensors();
-  // setupOilPump();
+
   Serial.println("System Ready: ESC x2 + Rudders Initialized");
   delay(1000);
   pwm.begin();
   pwm.setPWMFreq(50); // 50 Гц для серво
 
-  sensor.begin();
+  boat.setup();
   // // Пример: установить сигнал на 0-й канал
   // pwm.setPWM(0, 0, microsecondsToTicks(0));
 
@@ -163,46 +130,46 @@ updateRudder();
   static unsigned long lastHeadingTime = 0;
 
   // ==== Read GPS ====
-  while (GPSserial.available())
+  while (boat.GPSserial.available())
   {
-    char c = GPSserial.read();
+    char c = boat.GPSserial.read();
     if (millis() - lastStatusTime >= 15000)
     {
       Serial.write(c); //  NMEA
     }
-    gps.encode(c);
+    boat.gps.encode(c);
   }
 
   // Каждые 15 секунд
   if (millis() - lastStatusTime >= 15000)
   {
     lastStatusTime = millis();
-    if (gps.location.isValid())
+    if (boat.gps.location.isValid())
     {
       Serial.printf("✅ GPS FIX: Lat: %.6f, Lon: %.6f, Alt: %.1f m, Sats: %u\n",
-                    gps.location.lat(),
-                    gps.location.lng(),
-                    gps.altitude.meters(),
-                    gps.satellites.value());
+                    boat.gps.location.lat(),
+                    boat.gps.location.lng(),
+                    boat.gps.altitude.meters(),
+                    boat.gps.satellites.value());
     }
     else
     {
       Serial.println("🔄 Waiting for GPS fix...");
-      if (gps.satellites.isValid())
+      if (boat.gps.satellites.isValid())
       {
-        Serial.printf("Satellites in view: %d\n", gps.satellites.value());
+        Serial.printf("Satellites in view: %d\n", boat.gps.satellites.value());
       }
       else
       {
         Serial.printf("Satellites info not yet available.\n");
       }
-      if (gps.altitude.isValid())
+      if (boat.gps.altitude.isValid())
       {
-        Serial.printf("Altitude: %d\n", gps.altitude.meters());
+        Serial.printf("Altitude: %d\n", boat.gps.altitude.meters());
       }
-      if (gps.speed.isValid())
+      if (boat.gps.speed.isValid())
       {
-        Serial.printf("Speed: %d  km/h\n", gps.speed.kmph());
+        Serial.printf("Speed: %d  km/h\n", boat.gps.speed.kmph());
       }
     }
   }
@@ -216,25 +183,25 @@ updateRudder();
     float deltaTimeSeconds = (now - lastFusionTime) / 1000.0f;
     lastFusionTime = now;
 
-    mpu.accelUpdate();
-    mpu.gyroUpdate();
-    mpu.magUpdate();
+    boat.mpu.accelUpdate();
+    boat.mpu.gyroUpdate();
+    boat.mpu.magUpdate();
 
-    float ax = mpu.accelX();
-    float ay = mpu.accelY();
-    float az = mpu.accelZ();
-    float gx = mpu.gyroX() * DEG_TO_RAD;
-    float gy = mpu.gyroY() * DEG_TO_RAD;
-    float gz = mpu.gyroZ() * DEG_TO_RAD;
-    float mx = mpu.magX();
-    float my = mpu.magY();
-    float mz = mpu.magZ();
+    float ax = boat.mpu.accelX();
+    float ay = boat.mpu.accelY();
+    float az = boat.mpu.accelZ();
+    float gx = boat.mpu.gyroX() * DEG_TO_RAD;
+    float gy = boat.mpu.gyroY() * DEG_TO_RAD;
+    float gz = boat.mpu.gyroZ() * DEG_TO_RAD;
+    float mx = boat.mpu.magX();
+    float my = boat.mpu.magY();
+    float mz = boat.mpu.magZ();
 
     FusionVector gyro = {gx, gy, gz};
     FusionVector accel = {ax, ay, az};
     FusionVector mag = {mx, my, mz};
 
-    FusionAhrsUpdate(&ahrs, gyro, accel, mag, deltaTimeSeconds);
+    FusionAhrsUpdate(&boat.ahrs, gyro, accel, mag, deltaTimeSeconds);
   }
 
   if (millis() - lastPrint >= printInterval)
@@ -242,16 +209,15 @@ updateRudder();
     
     
     lastPrint = millis();
-    FusionQuaternion quat = FusionAhrsGetQuaternion(&ahrs);
+    FusionQuaternion quat = FusionAhrsGetQuaternion(&boat.ahrs);
     FusionEuler euler = FusionQuaternionToEuler(quat);
     Serial.printf("🔄 Roll: %.2f°, Pitch: %.2f°, Yaw: %.2f°\n",
                   euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
     boat.printStatus();
 
-      float v = 0, a = 0;
-  sensor.read(v, a);
-  Serial.printf("V: %.2f V\tI: %.3f A\n", v, a);
+
   }
   //updateTempsOneByOne();
-  // updateOilPumpLogic();
+  // 
+  boat.keep();
 }
