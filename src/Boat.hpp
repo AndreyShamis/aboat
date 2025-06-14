@@ -254,9 +254,9 @@ public:
             // Здесь обрабатываем полученный пакет
             // Например:
             if (receivedPacket.receiverId == BOAT_DEVICE_ID || receivedPacket.receiverId == 0xFF) { // Для меня или широковещательный
-                if (_log) {
-                    _log->addLog("Boat: Получен LoRa пакет для меня. Команда: " + String(receivedPacket.commandType) + ", Значение: " + String(receivedPacket.value));
-                }
+
+                addLog("Boat: Получен LoRa пакет для меня. Команда: " + String(receivedPacket.commandType) + ", Значение: " + String(receivedPacket.value));
+
                 // Пример обработки команды
                 if (receivedPacket.commandType == CMD_SET_SPEED) {
                     engine.apply(receivedPacket.value, 0);
