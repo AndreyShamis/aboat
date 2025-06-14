@@ -1,31 +1,29 @@
 #include <Arduino.h>
 #include <ESP32Servo.h>
-#include <TinyGPS++.h>
 #include "Fusion.h"
 #include <ESP32Servo.h>
 #include "settings.h"
-#include "rudder.hpp"
-#include "motor.hpp"
 #include "Boat.hpp"
 #include <Adafruit_PWMServoDriver.h>
+#include "web_interface.hpp"
+#include <SPIFFS.h>
 
 
-Boat boat;
 
 
-// ==== Global state ====
-
-static uint32_t lastPpmCounter = 0;
-static uint32_t lastPpmCheckTime = 0;
-bool ppmSignalAlive = true;
 unsigned long lastIMUUpdate = 0;
 const unsigned long imuInterval = 10; // 100Hz обновление фильтра
 unsigned long lastPrint = 0;
-const unsigned long printInterval = 5000; // Печатаем каждые 5 секунд
+const unsigned long printInterval = 15000; // Печатаем каждые 5 секунд
 static unsigned long lastChannelPrint = 0;
-const unsigned long channelPrintInterval = 200; // 2.5 секунды
+const unsigned long channelPrintInterval = 2000; // 2.5 секунды
+static unsigned long lastControlUpdate = 0;
+const unsigned long controlInterval = 100; // 100 мс = 10 Гц
 
+Boat boat;
+String inputBuffer;
 Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
+WebInterface *webInterface = nullptr;
 
 
 
@@ -36,143 +34,132 @@ uint16_t microsecondsToTicks(uint16_t us)
 
 void setup()
 {
-  pinMode(VextCtrl, OUTPUT);
-  digitalWrite(VextCtrl, HIGH); // включить питание на Ve
+  esp_log_level_set("*", ESP_LOG_VERBOSE);
+  boat.sensorsPowerOff(); // Выключаем питание датчиков
 
   Serial.begin(115200);
   Serial.println("\n\n\n");
+
+    if (!SPIFFS.begin(true)) {
+        Serial.println("- SPIFFS failed to mount");
+  } else {
+        Serial.println("+ SPIFFS PK");
+  }
   Serial.println("Boat Control System Starting...\n\n");
-  delay(1000);
-  digitalWrite(VextCtrl, LOW); // включить питание на Ve
-  delay(10);
-
-  // ESCs
-  escLeft.setPeriodHertz(50);
-  escLeft.attach(MOTOR_LEFT, 1000, 2000);
-  escRight.setPeriodHertz(50);
-  escRight.attach(MOTOR_RIGHT, 1000, 2000);
+  boat.sensorsPowerOn();
   // autoCalibrateESC(escLeft,escRight);
-  // Rudders
-  setupRudderPwm();
 
-  setRudderTrim(0, 0);
-  setRudderAngle(0);
+  webInterface = new WebInterface(boat);
+  webInterface->begin();
+  Serial.println("Web Server started");
+  delay(10);
+  boat.setup();
 
   Serial.println("System Ready: ESC x2 + Rudders Initialized");
-  delay(1000);
+  delay(10);
   pwm.begin();
   pwm.setPWMFreq(50); // 50 Гц для серво
-
-  boat.setup();
-  // // Пример: установить сигнал на 0-й канал
-  // pwm.setPWM(0, 0, microsecondsToTicks(0));
+;
 
 
-    //
 }
- static unsigned long lastControlUpdate = 0;
-const unsigned long controlInterval = 100;  // 100 мс = 10 Гц
 
+
+static unsigned long lastRandomRudderTime = 0;
+static unsigned long nextRandomRudderDelay = 0;
 // ==== Loop ====
 void loop()
 {
-  // updateEncoder();
+  
+  webInterface->handle();
+  if(boat.updateStarted){
+    if (Update.isRunning()) {
+      Update.printError(Serial);
+      Serial.println("Update in progress, please wait...");
+      return;
+    }
+    boat.updateStarted = false;
+  }
+  boat.keep();
+  while (Serial.available())
+  {
+    char c = Serial.read();
+    if (c == '\n')
+    {
+      Serial.println("Command processed: " + inputBuffer);
+      boat.parser.processLine(inputBuffer);
+      inputBuffer = "";
+    }
+    else if (c >= 32 && c <= 126)
+    {
+      inputBuffer += c;
+    }
+  }
+ 
+  uint16_t ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8, ch9, ch10;
 
-  uint16_t ch1 = getFlySkyChannel(0); // Правый stick X
-  uint16_t ch2 = getFlySkyChannel(1); // Правый stick Y
-  uint16_t ch3 = getFlySkyChannel(2); // Левый stick Y
-  uint16_t ch4 = getFlySkyChannel(3); // Левый stick X
+  ch1 = boat.flysky.getChannel(0); // Правый stick X
+  ch2 = boat.flysky.getChannel(1); // Правый stick Y
+  ch3 = boat.flysky.getChannel(2); // Левый stick Y
+  ch4 = boat.flysky.getChannel(3); // Левый stick X
+  ch5 = boat.flysky.getChannel(4);
+  ch6 = boat.flysky.getChannel(5);
+  ch7 = boat.flysky.getChannel(6);
+  ch8 = boat.flysky.getChannel(7);
+  ch9 = boat.flysky.getChannel(8);
+  ch10 = boat.flysky.getChannel(9);
+  //}
 
-  uint16_t ch5 = getFlySkyChannel(4);
-  uint16_t ch6 = getFlySkyChannel(5);
-  uint16_t ch7 = getFlySkyChannel(6);
-  uint16_t ch8 = getFlySkyChannel(7);
-  uint16_t ch9 = getFlySkyChannel(8);
-  uint16_t ch10 = getFlySkyChannel(9);
+if (millis() - lastRandomRudderTime >= nextRandomRudderDelay) {
+  lastRandomRudderTime = millis();
+  nextRandomRudderDelay = random(20, 2500); // 3–5 секунд
+
+  int randomAngle = random(-91, 91); // Угол от -60 до 60
+  boat.rudder.setAngle(randomAngle);
+
+  //Serial.printf("🎲 Random rudder angle set to: %d°\n", randomAngle);
+}
   if (ch5 < 1900)
   {
-    motorState = MOTOR_STOP;
+    boat.engine.setState(boat.engine.MOTOR_STOP);
   }
   else
   {
-    motorState = MOTOR_FORWARD;
+    if (ch6 < 1500 && ch6 >= 1000)
+    {
+      boat.engine.setState(boat.engine.MOTOR_FORWARD);
+    }
+    else if (ch6 > 1500 && ch6 <= 2000)
+    {
+      boat.engine.setState(boat.engine.MOTOR_REVERSE);
+    }
+    else
+    {
+      boat.engine.setState(boat.engine.MOTOR_STOP);
+    }
   }
   if (millis() - lastChannelPrint > channelPrintInterval)
   {
     lastChannelPrint = millis();
     //  Serial.printf("CH1: %u | CH2: %u | CH3: %u | CH4: %u\n", ch1, ch2, ch3, ch4);
-    Serial.printf("CH1: %u | CH2: %u | CH3: %u | CH4: %u -- CH5: %u | CH6: %u | CH7: %u | CH8: %u :::: CH9: %u - CH10: %u\n", ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8,ch9, ch10);
+    // Serial.printf("CH1: %u | CH2: %u | CH3: %u | CH4: %u -- CH5: %u | CH6: %u | CH7: %u | CH8: %u :::: CH9: %u - CH10: %u\n", ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8,ch9, ch10);
   }
-  // updatePwmLimit(ch7);
-  // checkMotorStateChange(ch1, ch2, ch3, ch4);
-  // applyMotorControl(ch3, ch4);
 
-  // setRudderAngle(map(ch1, 1000, 2000, -60, 60));
-  // updateRudder();
-  
-
-//if (millis() - lastControlUpdate >= controlInterval) {
   lastControlUpdate = millis();
+  boat.setThrottleLimit(ch7);
+  boat.engine.apply(ch3, ch4);
 
-  updatePwmLimit(ch7);
-  checkMotorStateChange(ch1, ch2, ch3, ch4);
-  applyMotorControl(ch3, ch4);
-  if (ch1 >=1000 && ch1 <= 2000)
+  if (ch1 >= 1000 && ch1 <= 2000 && boat.flysky.transmitter_on)
   {
-  setRudderAngle(map(ch1, 1000, 2000, -60, 60));
+    boat.rudder.setAngle(map(ch1, 1000, 2000, -90, 90)); // Обновляем руль только если есть валидный сигнал
   }
-  
 
- 
-updateRudder();
+  boat.rudder.update();
   // Для дебага:
   static unsigned long lastStatusTime = 0;
   static unsigned long lastHeadingTime = 0;
 
-  // ==== Read GPS ====
-  while (boat.GPSserial.available())
-  {
-    char c = boat.GPSserial.read();
-    if (millis() - lastStatusTime >= 15000)
-    {
-      Serial.write(c); //  NMEA
-    }
-    boat.gps.encode(c);
-  }
 
-  // Каждые 15 секунд
-  if (millis() - lastStatusTime >= 15000)
-  {
-    lastStatusTime = millis();
-    if (boat.gps.location.isValid())
-    {
-      Serial.printf("✅ GPS FIX: Lat: %.6f, Lon: %.6f, Alt: %.1f m, Sats: %u\n",
-                    boat.gps.location.lat(),
-                    boat.gps.location.lng(),
-                    boat.gps.altitude.meters(),
-                    boat.gps.satellites.value());
-    }
-    else
-    {
-      Serial.println("🔄 Waiting for GPS fix...");
-      if (boat.gps.satellites.isValid())
-      {
-        Serial.printf("Satellites in view: %d\n", boat.gps.satellites.value());
-      }
-      else
-      {
-        Serial.printf("Satellites info not yet available.\n");
-      }
-      if (boat.gps.altitude.isValid())
-      {
-        Serial.printf("Altitude: %d\n", boat.gps.altitude.meters());
-      }
-      if (boat.gps.speed.isValid())
-      {
-        Serial.printf("Speed: %d  km/h\n", boat.gps.speed.kmph());
-      }
-    }
-  }
 
   if (millis() - lastIMUUpdate >= imuInterval)
   {
@@ -206,18 +193,17 @@ updateRudder();
 
   if (millis() - lastPrint >= printInterval)
   {
-    
-    
+
     lastPrint = millis();
     FusionQuaternion quat = FusionAhrsGetQuaternion(&boat.ahrs);
     FusionEuler euler = FusionQuaternionToEuler(quat);
-    Serial.printf("🔄 Roll: %.2f°, Pitch: %.2f°, Yaw: %.2f°\n",
-                  euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
+    // char buf[128];
+    // snprintf(buf, sizeof(buf), "🔄 Roll: %.2f°, Pitch: %.2f°, Yaw: %.2f°",
+    //          euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
+    // boat.addLog(buf);
+
     boat.printStatus();
-
-
   }
-  //updateTempsOneByOne();
-  // 
-  boat.keep();
+
+  
 }

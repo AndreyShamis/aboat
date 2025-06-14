@@ -1,23 +1,58 @@
-#ifndef BATTERY_MONITOR_HPP
-#define BATTERY_MONITOR_HPP
+#pragma once
 
+#include "settings.h"
 #include <Arduino.h>
+#include <Wire.h>
+#include <ArduinoJson.h>
 
 class BatteryMonitor {
 public:
-    // GPIO1 = ADC1_CH0 = VBAT_Read на Heltec ESP32-S3 Stick Lite V3
-    static constexpr int BATTERY_ADC_PIN = 1;  
-    static constexpr float VREF = 3.3; // опорное напряжение
-    static constexpr float DIVIDER_RATIO = 4.9; // 390k + 100k
 
     BatteryMonitor() {
-        analogReadResolution(12);
+        analogReadResolution(12);                // 0..4095
+        //analogSetClockDiv(1);                    // максимальная скорость
+        //analogSetAttenuation(ADC_11db);          // для всех пинов
+        //analogSetPinAttenuation(VBAT_READ_PIN, ADC_11db);
     }
 
-    float readVoltage() const {
-        int raw = analogRead(BATTERY_ADC_PIN);
-        return ((float)raw / 4095.0f) * VREF * DIVIDER_RATIO;
+    void setup() {
+        pinMode(ADC_CTRL_PIN, OUTPUT);
+        digitalWrite(ADC_CTRL_PIN, LOW);         // питание по умолчанию отключено
+        adcAttachPin(VBAT_READ_PIN);             // подключаем ADC к пину
     }
+
+    void prepareForRead() {
+        digitalWrite(ADC_CTRL_PIN, LOW);        // включаем питание
+        delay(10);                                // ждём стабилизацию
+    }
+
+    void readVoltage() {
+        rawValue = analogRead(VBAT_READ_PIN);
+        millivolts = analogReadMilliVolts(VBAT_READ_PIN);
+        voltageCache = millivolts * (490.0f / 100.0f) / 1000.0f;  // из mV в V с учётом делителя
+        digitalWrite(ADC_CTRL_PIN, HIGH);         // отключаем питание
+    }
+
+    float getVoltage() const {
+        return voltageCache;
+    }
+
+    int getRaw() const {
+        return rawValue;
+    }
+
+    int getMillivolts() const {
+        return millivolts;
+    }
+
+    void toJson(JsonObject& json) const {
+        json["voltage"] = voltageCache;
+        json["raw"] = rawValue;
+        json["millivolts"] = millivolts;
+    }
+
+private:
+    int rawValue = 0;
+    int millivolts = 0;
+    float voltageCache = 0.0f;
 };
-
-#endif // BATTERY_MONITOR_HPP

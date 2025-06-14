@@ -16,12 +16,20 @@ public:
             // Можно добавить обработку ошибки
             Serial.print("Failed to initialize ADS1115 at address 0x");
             Serial.println(_i2cAddress, HEX);
-            while (true); // глушим, или сделай флаг
+            //while (true); // глушим, или сделай флаг
+            return;
         }
+        _initialized = true;
         ads.setGain(GAIN_ONE); // ±4.096 V вход
     }
 
     void read(float &voltage, float &current) {
+        if (!_initialized) {
+            Serial.println("Sensor not initialized. Call begin() first.");
+            voltage = 0;
+            current = 0;
+            return;
+        }
         int16_t rawV = ads.readADC_SingleEnded(2); // A2 = VT
         int16_t rawA = ads.readADC_SingleEnded(3); // A3 = AT
 
@@ -32,7 +40,7 @@ public:
 private:
     Adafruit_ADS1115 ads;
     uint8_t _i2cAddress;
-
+    bool _initialized = false;
     static constexpr float VOLTAGE_DIVIDER_RATIO = 17.819f;                                                                       
     static constexpr float SHUNT_CONVERSION = 0.196f;
 };

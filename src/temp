@@ -20,10 +20,14 @@
 #include <time.h>
 #include "FS.h"
 #include "SPIFFS.h"
+#include "LogInterface.hpp"
+#include "lora_comm.hpp"
 
 using namespace ArduinoJson;
 
-class Boat
+
+
+class Boat : public LogInterface
 {
 
 public:
@@ -41,13 +45,11 @@ public:
     CommandParser parser;
     GNSSManager gnss;
     bool updateStarted = false;
-    SX1262 *lora = nullptr;
+    LoRaComm lora;
 
     // Boat() : sensor(0x48), gnss(Serial2) {}
-    Boat() : sensor(0x48), gnss(Serial2)
+    Boat() : sensor(0x48), gnss(Serial2), lora(DEVICE_ID_BOAT, this)
     {
-        SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);                     // инициализация SPI
-        lora = new SX1262(new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY)); // создание радиомодуля
     }
 
     void setup()
@@ -160,22 +162,6 @@ public:
                                    oilPump.setSpeed(speed); });
 
         addLog("Commands registered: M (motor), R (rudder), P (oil pump)");
-        digitalWrite(LORA_RST, LOW);
-        delay(10);
-        digitalWrite(LORA_RST, HIGH);
-        delay(10);
-        pinMode(LORA_BUSY, INPUT);
-        addLog("BUSY state before init: " + String(digitalRead(LORA_BUSY)));
-
-        int state = lora->begin(868.0);
-        if (state != RADIOLIB_ERR_NONE)
-        {
-            addLog("- RadioLib init failed:" + String(state));
-        }
-        else
-        {
-            addLog("+ RadioLib LoRa initialized");
-        }
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
         addLog("Free sketch space: " + String(ESP.getFreeSketchSpace()) + " bytes");
@@ -191,6 +177,14 @@ public:
         printSPIFFSInfo();
         // listSPIFFSFiles();
         addLog("Boat initialized successfully.");
+        // Инициализация LoRa модуля члена класса lora
+        if (!lora.begin()) { // <-- ИЗМЕНЕНО: Инициализация lora здесь
+            Serial.println("❌ LoRa initialization failed!");
+            addLog("LoRa initialization failed!");
+        } else {
+            Serial.println("✅ LoRa initialized successfully!");
+            addLog("LoRa initialized successfully!");
+        }
     }
 
     unsigned long lastSync = 0;
@@ -298,9 +292,9 @@ public:
         size_t usedBytes = SPIFFS.usedBytes();
         size_t freeBytes = totalBytes - usedBytes;
 
-        addLog("Total size: " + String(totalBytes/1024) + " Kbytes");
-        addLog("Used size:  " + String(usedBytes/1024) + " Kbytes");
-        addLog("Free size:  " + String(freeBytes/1024) + " Kbytes");
+        addLog("Total size: " + String(totalBytes / 1024) + " Kbytes");
+        addLog("Used size:  " + String(usedBytes / 1024) + " Kbytes");
+        addLog("Free size:  " + String(freeBytes / 1024) + " Kbytes");
     }
 
     void listSPIFFSFiles()
@@ -353,23 +347,17 @@ public:
         doc[F("voltage")] = v;
         doc[F("current")] = a;
 
-        JsonObject temp = doc[F("temperature")].to<JsonObject>(); //  doc.createNestedObject(F("temperature"));
+        JsonObject temp = doc[F("temperature")].to<JsonObject>(); 
         temp[F("motor1")] = temps.get(MOTOR1);
         temp[F("motor2")] = temps.get(MOTOR2);
         temp[F("radiator")] = temps.get(MOTOR_RAD);
         temp[F("oil")] = temps.get(OIL);
         temp[F("ambient")] = temps.get(ENV);
 
-        // JsonObject gpsObj = doc[F("gnss")].to<JsonObject>(); //  doc.createNestedObject(F("gps"));
-        // gpsObj[F("lat")] = gps.location.lat();
-        // gpsObj[F("lon")] = gps.location.lng();
-        // gpsObj[F("alt")] = gps.altitude.meters();
-        // gpsObj[F("sats")] = gps.satellites.value();
-
         FusionQuaternion quat = FusionAhrsGetQuaternion(&ahrs);
         FusionEuler euler = FusionQuaternionToEuler(quat);
 
-        JsonObject imu = doc[F("imu")].to<JsonObject>(); // doc.createNestedObject(F("imu"));
+        JsonObject imu = doc[F("imu")].to<JsonObject>(); 
         imu[F("roll")] = euler.angle.roll;
         imu[F("pitch")] = euler.angle.pitch;
         imu[F("yaw")] = euler.angle.yaw;
@@ -378,8 +366,7 @@ public:
         oilPump.toJSON(pumpObj);
         JsonObject sysObj = doc[F("system")].to<JsonObject>();
         SystemStatus::toExtendedJSON(sysObj);
-        // JsonObject sysObj = doc[F("system")].to<JsonObject>();
-        // SystemStatus::toJSON(sysObj);
+
 
         JsonObject rudderObj = doc[F("rudder")].to<JsonObject>();
         rudder.toJSON(rudderObj);

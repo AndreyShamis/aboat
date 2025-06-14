@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head><title>SPIFFS OTA</title></head>
+<body>
+  <h2>Загрузка spiffs.bin</h2>
+  <input type="file" id="file"><br><br>
+  <button onclick="upload()">Загрузить</button>
+  <pre id="status"></pre>
+  <script>
+    function upload() {
+      const f = document.getElementById('file').files[0];
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/update_spiffs", true);
+      xhr.onload = () => document.getElementById("status").textContent = xhr.responseText;
+      xhr.send(f);
+    }
+  </script>
+</body>
+</html>

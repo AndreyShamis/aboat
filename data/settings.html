@@ -1,0 +1,136 @@
+                                                                                                                            <!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Настройки лодки</title>
+  <style>
+    body { font-family: sans-serif; padding: 20px; background-color: #f0f8ff; }
+    h1 { color: #0066cc; }
+    label { display: inline-block; width: 180px; margin-top: 10px; }
+    select, button { padding: 5px 10px; margin-top: 5px; }
+    .section { margin-bottom: 30px; }
+  </style>
+</head>
+<body>
+  <h1>Настройки лодки</h1>
+
+  <div class="section">
+    <h2>Моторы</h2> 
+    <div>
+      <label for="leftEsc">Левый ESC:</label>
+      <select id="leftEsc">
+        <option value="uni">Односторонний</option>
+        <option value="bi">Двусторонний</option>
+      </select>
+    </div>
+    <div>
+      <label for="leftSensor">Датчик левого мотора:</label>
+      <select id="leftSensor"></select>
+    </div>
+    <div>
+      <label for="rightEsc">Правый ESC:</label>
+      <select id="rightEsc">
+        <option value="uni">Односторонний</option>
+        <option value="bi">Двусторонний</option>
+      </select>
+    </div>
+    <div>
+      <label for="rightSensor">Датчик правого мотора:</label>
+      <select id="rightSensor"></select>
+    </div>
+    <button onclick="saveConfig()">Сохранить настройки</button>
+  </div>
+
+  <div class="section">
+    <h2>Температура (Live)</h2>
+    <div>Левый мотор: <span id="tempLeft">--</span> °C</div>
+    <div>Правый мотор: <span id="tempRight">--</span> °C</div>
+  </div>
+
+  <script>
+async function loadConfig() {
+  const [cfg, sensors] = await Promise.all([
+    fetch('/api/config').then(r => r.json()),
+    fetch('/api/tempsensors').then(r => r.json())
+  ]);
+
+  const leftSensorSelect = document.getElementById('leftSensor');
+  const rightSensorSelect = document.getElementById('rightSensor');
+
+  // Собираем использованные сенсоры
+  const used = [cfg.left.sensor, cfg.right.sensor];
+
+  // Функция заполнения селектора
+  function fillSelect(select, current) {
+    select.innerHTML = '';
+
+    sensors.forEach(addr => {
+      if (addr === current || !used.includes(addr)) {
+        const option = document.createElement('option');
+        option.value = addr;
+        option.textContent = addr;
+        select.appendChild(option);
+      }
+    });
+
+    select.value = current; // выставить выбранное значение
+  }
+
+  document.getElementById('leftEsc').value = cfg.left.esc;
+  document.getElementById('rightEsc').value = cfg.right.esc;
+
+  fillSelect(leftSensorSelect, cfg.left.sensor);
+  fillSelect(rightSensorSelect, cfg.right.sensor);
+}
+
+
+    async function saveConfig() {
+        const left = document.getElementById('leftSensor').value;
+        const right = document.getElementById('rightSensor').value;
+
+        if (left === right) {
+            alert('Already in use');
+            return;
+        }
+
+        const cfg = {
+            left: {
+            esc: document.getElementById('leftEsc').value,
+            sensor: left
+            },
+            right: {
+            esc: document.getElementById('rightEsc').value,
+            sensor: right
+            }
+        };
+
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(cfg)
+        });
+
+        alert('Saved');
+    }
+
+    async function updateTemps() {
+        const res = await fetch('/api/temps');
+        const temps = await res.json();
+        document.getElementById('tempLeft').textContent = temps.left;
+        document.getElementById('tempRight').textContent = temps.right;
+    }
+
+    async function reboot() {
+        await fetch('/api/reboot', { method: 'POST' });
+        alert('Устройство будет перезагружено.');
+    }
+    setInterval(updateTemps, 5000);
+    loadConfig();
+    updateTemps();
+  </script>
+
+<div class="section">
+  <h2>Система</h2>
+  <button onclick="reboot()">Reboot</button>
+
+</div></body></html>
