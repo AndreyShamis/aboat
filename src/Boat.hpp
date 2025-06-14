@@ -16,14 +16,14 @@
 #include "command_parser.hpp"
 #include "Adafruit_INA3221.h"
 #include <Preferences.h>
-#include <RadioLib.h>
 #include <time.h>
 #include "FS.h"
 #include "SPIFFS.h"
+#include "lora_comm.hpp"
 
 using namespace ArduinoJson;
-
-class Boat
+#define BOAT_DEVICE_ID 0x01
+class Boat: LogInterface
 {
 
 public:
@@ -41,15 +41,19 @@ public:
     CommandParser parser;
     GNSSManager gnss;
     bool updateStarted = false;
-    SX1262 *lora = nullptr;
+    LoRaComm* loraComm; // Новый объект для LoRa связи
 
     // Boat() : sensor(0x48), gnss(Serial2) {}
     Boat() : sensor(0x48), gnss(Serial2)
     {
-        SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);                     // инициализация SPI
-        lora = new SX1262(new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY)); // создание радиомодуля
+        loraComm = new LoRaComm(BOAT_DEVICE_ID, this); 
+
+    }
+    ~Boat() {
+        delete loraComm;
     }
 
+    
     void setup()
     {
         delay(3); // Задержка для отладки
@@ -160,22 +164,14 @@ public:
                                    oilPump.setSpeed(speed); });
 
         addLog("Commands registered: M (motor), R (rudder), P (oil pump)");
-        digitalWrite(LORA_RST, LOW);
-        delay(10);
-        digitalWrite(LORA_RST, HIGH);
-        delay(10);
-        pinMode(LORA_BUSY, INPUT);
-        addLog("BUSY state before init: " + String(digitalRead(LORA_BUSY)));
 
-        int state = lora->begin(868.0);
-        if (state != RADIOLIB_ERR_NONE)
-        {
-            addLog("- RadioLib init failed:" + String(state));
+        // Инициализация нового класса LoRaComm
+        if (!loraComm->begin()) {
+            addLog(" - ERROR! LoRaComm не инициализирован.");
+        } else {
+            addLog(" + LoRaComm успешно инициализирован.");
         }
-        else
-        {
-            addLog("+ RadioLib LoRa initialized");
-        }
+        
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
         addLog("Free sketch space: " + String(ESP.getFreeSketchSpace()) + " bytes");
@@ -250,9 +246,34 @@ public:
         {
             lastPrint = millis();
             time_t now = time(nullptr);
-            addLog("SYstem time:" + String(now));
+            addLog("System time:" + String(now));
         }
-
+        // Обработка входящих LoRa пакетов в цикле keep()
+        LoRaPacket receivedPacket;
+        if (loraComm->parseReceivedPacket(receivedPacket)) {
+            // Здесь обрабатываем полученный пакет
+            // Например:
+            if (receivedPacket.receiverId == BOAT_DEVICE_ID || receivedPacket.receiverId == 0xFF) { // Для меня или широковещательный
+                if (_log) {
+                    _log->addLog("Boat: Получен LoRa пакет для меня. Команда: " + String(receivedPacket.commandType) + ", Значение: " + String(receivedPacket.value));
+                }
+                // Пример обработки команды
+                if (receivedPacket.commandType == CMD_SET_SPEED) {
+                    engine.apply(receivedPacket.value, 0);
+                    addLog("Boat: Установлена скорость двигателя: " + String(receivedPacket.value));
+                }
+                // Отправка ACK
+                LoRaPacket ackPacket = {
+                    .senderId = BOAT_DEVICE_ID,
+                    .receiverId = receivedPacket.senderId,
+                    .commandType = CMD_ACK,
+                    .value = (int16_t)receivedPacket.packetId, // Подтверждаем ID полученного пакета
+                    .packetId = (uint16_t)(millis() & 0xFFFF), // Новый ID для ACK пакета
+                    .checksum = 0 // Будет рассчитана в sendPacket
+                };
+                loraComm->sendPacket(ackPacket);
+            }
+        }
         // Синхронизация при первом валидном значении GPS времени
         // if (gnss.gnss.time.isUpdated() && millis() - lastSync > 10000)
         // {
@@ -468,7 +489,7 @@ public:
         addLog(" ! Returning to manual control");
     }
 
-    void addLog(const String &msg)
+    void addLog(const String &msg) override 
     {
         Serial.println(msg);
         if (logBuffer.size() >= logCapacity)
