@@ -105,9 +105,9 @@ public:
     void toJSON(JsonObject &json) const
     {
         json["state"] = getMotorStateStr();
-        JsonObject leftJson = json.createNestedObject("left");
+        JsonObject leftJson = json["left"].to<JsonObject>();
         left.toJSON(leftJson);
-        JsonObject rightJson = json.createNestedObject("right");
+        JsonObject rightJson = json["right"].to<JsonObject>();
         right.toJSON(rightJson);
     }
 

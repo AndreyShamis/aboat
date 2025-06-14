@@ -59,7 +59,7 @@ public:
     }
 
     String getStatusJson() {
-        StaticJsonDocument<256> doc;
+        JsonDocument doc;
         toJson(doc.to<JsonObject>());
         String result;
         serializeJson(doc, result);

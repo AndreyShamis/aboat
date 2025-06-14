@@ -367,7 +367,7 @@ public:
 
     String getStatusJson()
     {
-        StaticJsonDocument<1768> doc; // Подбери под размер данных
+        JsonDocument doc; // Подбери под размер данных
 
         float v = 0, a = 0;
         sensor.read(v, a);
@@ -419,7 +419,7 @@ public:
         JsonArray inaArray = doc["ina3221"].to<JsonArray>();
         for (uint8_t ch = 0; ch < 3; ch++)
         {
-            JsonObject chObj = inaArray.createNestedObject();
+            JsonObject chObj = inaArray.add<JsonObject>();
             chObj["channel"] = ch + 1;
             chObj["bus"] = ina3221.getBusVoltage(ch);
             chObj["shunt"] = ina3221.getShuntVoltage(ch);
@@ -429,7 +429,7 @@ public:
         JsonArray inaLowArray = doc["ina3221_low"].to<JsonArray>();
         for (uint8_t ch = 0; ch < 3; ch++)
         {
-            JsonObject chObj = inaLowArray.createNestedObject();
+            JsonObject chObj = inaLowArray.add<JsonObject>();
             chObj["channel"] = ch + 1;
             chObj["bus"] = ina3221_low.getBusVoltage(ch);
             chObj["shunt"] = ina3221_low.getShuntVoltage(ch);
@@ -508,7 +508,7 @@ public:
         String rightAddr = prefs.getString("r_addr", "");
         prefs.end();
 
-        StaticJsonDocument<256> doc;
+        JsonDocument doc;
         doc["left"]["esc"] = leftEsc;
         doc["left"]["sensor"] = leftAddr;
         doc["right"]["esc"] = rightEsc;
@@ -525,7 +525,7 @@ public:
         Preferences prefs;
         Serial.println("Setting motor config from JSON: " + json);
         prefs.begin("boatcfg", false);
-        DynamicJsonDocument doc(256);
+        JsonDocument doc;
         deserializeJson(doc, json);
         Serial.println("Disabled putting motor config to preferences");
         prefs.putString("l_esc", doc["left"]["esc"].as<String>());
@@ -548,7 +548,7 @@ public:
         float leftTemp = temps.getByAddressString(leftAddr);
         float rightTemp = temps.getByAddressString(rightAddr);
 
-        StaticJsonDocument<128> doc;
+        JsonDocument doc;
         doc["left"] = isnan(leftTemp) ? -127.0 : leftTemp;
         doc["right"] = isnan(rightTemp) ? -127.0 : rightTemp;
 
@@ -559,7 +559,7 @@ public:
 
     String getAllSensorAddressesJson()
     {
-        StaticJsonDocument<256> doc;
+        JsonDocument doc;
         JsonArray arr = doc.to<JsonArray>();
         for (const auto &addr : temps.getAllAddresses())
         {

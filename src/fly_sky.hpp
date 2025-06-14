@@ -142,7 +142,7 @@ public:
     void toJson(JsonObject &json)
     {
         updateAllChannels();
-        JsonArray chArr = json.createNestedArray("channels");
+        JsonArray chArr = json["channels"].add<JsonArray>();
         for (uint8_t i = 0; i < MAX_CHANNELS; ++i)
         {
             chArr.add(channels[i]);
