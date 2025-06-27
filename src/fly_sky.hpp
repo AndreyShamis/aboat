@@ -37,6 +37,7 @@ public:
         powerOn();
         serial.begin(115200, SERIAL_8N1, FLY_SKY_IBUS_RX_PIN, -1);
         startIBus();
+        Serial.println(F("IBus timer started"));
     }
     
     void stop()
@@ -60,9 +61,11 @@ public:
 
     void startIBus()
     {
-        if (timerHandle)
+        if (timerHandle){
             Serial.println(F("IBus already started!"));
             return; 
+        }
+
         extern IBusBM *IBusBMfirst;
         stopIBus();  // на всякий случай
 
@@ -121,7 +124,7 @@ public:
         if (ibus && ch < MAX_CHANNELS)
         {
             channels[ch] = ibus->readChannel(ch);
-            if (ch == 2)
+            if (ch == 2) // Проверяем каналы газа и руля
                 transmitter_on = (channels[ch] >= 1000);
             return channels[ch];
         }

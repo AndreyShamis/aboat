@@ -38,13 +38,21 @@ public:
     }
 #endif
     static bool updateInProgress = false;
+    server.on("/api/rudder/on", HTTP_POST, [this]()
+              {
+  boatRef.rudder.enable();  // включить питание и PWM
+  server.send(200, "text/plain", "Rudder ON"); });
 
-    server.on("/api/reboot", HTTP_POST, [this]() {
+    server.on("/api/rudder/off", HTTP_POST, [this]()
+              {
+  boatRef.rudder.disable();  // выключить питание и сбросить PWM
+  server.send(200, "text/plain", "Rudder OFF"); });
+
+    server.on("/api/reboot", HTTP_POST, [this]()
+              {
         server.send(200, "text/plain", "Rebooting...");
         delay(300);
-        ESP.restart();
-    });
-
+        ESP.restart(); });
 
     server.on("/", HTTP_GET, [this]()
               { server.send(200, "text/html", getMainPage()); });
@@ -278,6 +286,15 @@ function toggleFlySky(action) {
   .then(txt => alert(txt))
   .catch(err => alert("Ошибка: " + err));
 }
+  function toggleRudder(action) {
+  fetch(`/api/rudder/${action}`, {
+    method: 'POST'
+  })
+  .then(res => res.text())
+  .then(msg => alert(msg))
+  .catch(err => alert("Ошибка: " + err));
+}
+
 </script>
 
 
@@ -294,8 +311,14 @@ function toggleFlySky(action) {
     <h2>FlySky iBUS</h2>
   <button class="btn" onclick="toggleFlySky('on')">Включить FlySky</button>
   <button class="btn" onclick="toggleFlySky('off')">Выключить FlySky</button>
-</div>
 
+  <h2>Rudder</h2>
+<button class="btn" onclick="toggleRudder('on')">Включить Rudder</button>
+<button class="btn" onclick="toggleRudder('off')">Выключить Rudder</button>
+  <h2>Система</h2>
+  <button onclick="reboot()">Reboot</button>
+
+</div>
 
 <div class="card col">
   <h2>Прошивка (FOTA)</h2>
@@ -373,14 +396,14 @@ function uploadFirmware() {
 // Добавь в JavaScript выше fetchData():
 const INA_CHANNEL_LIMITS = {
   ina3221: {
-    1: { minVoltage: 4.9, maxVoltage: 5.3, maxCurrent: 0.350 },
-    2: { minVoltage: 9, maxVoltage: 18.0, maxCurrent: 1.6 },
-    3: { minVoltage: 9, maxVoltage: 18.0, maxCurrent: 1.6 }
+    1: { minVoltage: 4.9, maxVoltage: 5.2, maxCurrent: 0.550 },
+    2: { minVoltage: 4.9, maxVoltage: 5.1, maxCurrent: 1.6123 },
+    3: { minVoltage: 9, maxVoltage: 18.0, maxCurrent: 1.6123 }
   },
   ina3221_low: {
-    1: { minVoltage: 3.1, maxVoltage: 5.0,  maxCurrent: 0.09 },
-    2: { minVoltage: 4.81, maxVoltage: 5.2, maxCurrent: 0.1 },
-    3: { minVoltage: 4.8, maxVoltage: 5.0,  maxCurrent: 1.6 }
+    1: { minVoltage: 3.1, maxVoltage: 3.35,  maxCurrent: 0.1 },
+    2: { minVoltage: 4.9, maxVoltage: 5.2, maxCurrent: 0.1 },
+    3: { minVoltage: 4.9, maxVoltage: 5.2,  maxCurrent: 1.6 }
   }
 };
 
@@ -424,10 +447,10 @@ function renderINA(title, arr, limitSetName) {
       }).join("")}
     </table>`;
 }
-
-
-
-
+    async function reboot() {
+        await fetch('/api/reboot', { method: 'POST' });
+        alert('Устройство будет перезагружено.');
+    }
 
   async function fetchData() {
     const res = await fetch('/status');
@@ -458,10 +481,6 @@ function renderINA(title, arr, limitSetName) {
       marker.setLatLng([lat, lon]);
     }
   }
-
-
-
-
     function card(title, body) {
       const div = document.createElement('div');
       div.className = 'card col';
@@ -490,31 +509,16 @@ card("INA3221 LOW", renderINA("INA3221 LOW", data.ina3221_low, "ina3221_low"));
 
     card("Температура", tempHTML);
     let batColor = "green";
-    if (data.battery.voltage < 3.4) batColor = "red";
-    else if (data.battery.voltage < 3.6) batColor = "orange";
-
-    card("Battery", `
-      <p>Напряжение: <span class="badge" style="background:${batColor}">${data.battery.voltage.toFixed(2)} V</span></p>
-      <p>Сырые данные: ${data.battery.raw.toFixed(2)}</p>
-      <p>mV: ${data.battery.millivolts.toFixed(0)} mV</p>
-    `);
+    if (data.b.v < 3.4) batColor = "red";
+    else if (data.b.v < 3.6) batColor = "orange";
 
     card("System", `
+    <p>Battery: <span class="badge" style="background:${batColor}">${data.b.v.toFixed(2)} V</span></p>
       <p>Reset: ${data.system.reset_reason}</p>
       <p>Wakeup: ${data.system.wakeup_reason}</p>
       <p>Uptime: ${data.system.uptime_sec.toFixed(1)} сек</p>
       <p>IDF: ${data.system.idf_version}</p>
     `);
-
-    card("Power", `
-      <p>Напряжение: ${data.voltage.toFixed(2)} V</p>
-      <p>Ток: ${data.current.toFixed(3)} A</p>
-      <p>Battery: ${data.battery.voltage.toFixed(5)} V</p>
-      <p>Battery raw: ${data.battery.raw.toFixed(5)} V</p>
-      <p>Battery: millivolts ${data.battery.millivolts.toFixed(6)} V</p>
-    `);
-    // card("INA3221", renderINA("INA3221", data.ina3221));
-    // card("INA3221 L", renderINA("INA3221 L", data.ina3221_low));
 
     const temps = Object.entries(data.temperature).map(([k, v]) =>
       `<p>${k}: ${v !== -127 ? v.toFixed(1) + " °C" : "нет данных"}</p>`).join("");
@@ -539,14 +543,14 @@ card("GNSS", `
     `);
 
     card("Rudder", `
-      <p>Текущий угол: ${data.rudder.current} %</p>
-      <p>Целевой угол: ${data.rudder.target} %</p>
-      <p>CPWM: ${data.rudder.cPwm} TPWM: ${data.rudder.tPwm}</p>
+      <p>Текущий угол: ${data.rudder.current} % [CPWM: ${data.rudder.cPwm}] - Целевой угол: ${data.rudder.target} %  [TPWM: ${data.rudder.tPwm}]</p>
     `);
 
     card(`Motors (${data.motor.state})`, `
-      <p>Left Motor: ${data.motor.left.current} → ${data.motor.left.target}</p>
-      <p>Right Motor: ${data.motor.right.current} → ${data.motor.right.target}</p>
+      <p>Left Motor: [${data.motor.left.esc_type}] ${data.motor.left.current} → ${data.motor.left.target} [${data.motor.left.sensor}:${data.motor.left.temp}] 
+      - 
+      Right Motor: [${data.motor.right.esc_type}] ${data.motor.right.current} → ${data.motor.right.target} [${data.motor.right.sensor}:${data.motor.right.temp}]
+      </p>
     `);
 
     card("FlySky Receiver", `
@@ -556,16 +560,13 @@ card("GNSS", `
           <div class="progress-bar-inner" style="width:${(data.receiver.channels[2] - 1000) / 10}%;"></div>
       </div>
 
-          ${data.receiver.channels.map((v, i) => `<strong>CH${i + 1}</strong>: ${v}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;`).join("")}
+    ${data.receiver.channels
+      .map((v, i) => `<strong>CH${i + 1}</strong>: ${v}`)
+      .join(",&nbsp;&nbsp;")}
       <p><small>Пакетов: ${data.receiver.ibus_packets}</small> - <small>Сенсоры: ${data.receiver.ibus_sensor_reads}</small> - <small>DISCOVER: ${data.receiver.ibus_discover}</small></p>
     `);
 
-    card("Логи", `
-      <pre style="white-space: pre-wrap; font-size: 12px; background: #111; color: #0f0; padding: 10px; border-radius: 5px; max-height: 200px; overflow-y: auto;">
-${data.logs.slice().reverse().join("\n")}
-      </pre>
-    `);
-
+    card("Логи", `<pre style="white-space: pre-wrap; font-size: 12px; background: #111; color: #0f0; padding: 10px; border-radius: 5px; max-height: 200px; overflow-y: auto;">${data.logs.slice().reverse().join("\n")}</pre>`);
     
   }
 

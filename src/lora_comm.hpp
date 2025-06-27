@@ -1,74 +1,47 @@
 #pragma once
-
+// lora_comm.hpp
 #include <Arduino.h>
 #include <RadioLib.h>
 #include <SPI.h>
-#include "settings.h" // Конфигурация LoRa модуля
+#include "settings.h"       // Конфигурация LoRa модуля
 #include "LogInterface.hpp" // Интерфейс для логирования
+#include "PacketClasses.hpp"
 
-// ВАЖНО: Эти определения должны быть доступны до компиляции LoRaComm.hpp.
-// Их лучше разместить в отдельном файле settings.h, который включается здесь и в main .ino файле.
-// Или же прямо здесь, но тогда убедитесь, что они не конфликтуют с другими определениями.
-
-// --- СВОЙ ПРОТОКОЛ СООБЩЕНИЙ ---
-enum CommandType : uint8_t {
-    CMD_NONE = 0,
-    CMD_SET_SPEED = 1,
-    CMD_STOP_ENGINE = 2,
-    CMD_START_ENGINE = 3,
-    CMD_GET_BOAT_STATUS = 4,
-    CMD_BOAT_STATUS_REPORT = 5,
-    CMD_ACK = 6
-};
-
-// Структура для всех LoRa пакетов
-struct LoRaPacket {
-    uint8_t   senderId;
-    uint8_t   receiverId;
-    uint8_t   commandType;
-    int16_t   value;
-    uint16_t  packetId;
-    uint8_t   checksum;
-};
-
-// Функция для расчета простой контрольной суммы XOR
-static uint8_t calculateChecksum(const LoRaPacket& packet) {
-    uint8_t cs = 0;
-    cs ^= packet.senderId;
-    cs ^= packet.receiverId;
-    cs ^= packet.commandType;
-    cs ^= (uint8_t)(packet.value & 0xFF);
-    cs ^= (uint8_t)((packet.value >> 8) & 0xFF);
-    cs ^= (uint8_t)(packet.packetId & 0xFF);
-    cs ^= (uint8_t)((packet.packetId >> 8) & 0xFF);
-    return cs;
-}
-
-class LoRaComm {
+class LoRaComm
+{
 private:
     uint8_t myDeviceId;
-    Module* _module;
-    SX1262 radio; // Объект LoRa модуля
+    Module *_module;
+    SX1262 radio;
+    int currentSF = LORA_SF;
+    int currentCR = LORA_CODING_RATE;
+    float currentBW = LORA_BANDWIDTH;
+    float currentFreq = LORA_FREQUENCY;
+    int8_t currentTX = LORA_TX_POWER;
 
-    LogInterface* _log; // Указатель на интерфейс логирования
+    LogInterface *_log; // Указатель на интерфейс логирования
 
 public:
     // Конструктор: принимает ID устройства и указатель на объект логирования
-    LoRaComm(uint8_t deviceId, LogInterface* logger) :
-        myDeviceId(deviceId),
-        _module(new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY)), // Создаем модуль без указания SPI здесь
-        radio(_module),
-        _log(logger)
-    {}
+    LoRaComm(uint8_t deviceId, LogInterface *logger) : myDeviceId(deviceId),
+                                                       _module(new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY)), // Создаем модуль без указания SPI здесь
+                                                       radio(_module),
+                                                       _log(logger)
+    {
+    }
+    SX1262 &getRadio() { return radio; }
 
     // Деструктор для освобождения динамически выделенной памяти
-    ~LoRaComm() {
+    ~LoRaComm()
+    {
         delete _module;
     }
 
     // Инициализация LoRa модуля
-    bool begin() {
-        if (_log) {
+    bool begin()
+    {
+        if (_log)
+        {
             _log->addLog("LoRaComm: Инициализация SPI для LoRa...");
         }
 
@@ -76,14 +49,15 @@ public:
         // Это делается здесь, чтобы LoRaComm полностью отвечал за свои зависимости SPI
         SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
 
-        // Программный сброс LoRa модуля, как в вашем рабочем коде из Boat
+        // Программный сброс LoRa модуля
         digitalWrite(LORA_RST, LOW);
-        delay(10);
+        delay(5);
         digitalWrite(LORA_RST, HIGH);
-        delay(10);
+        delay(2);
 
         pinMode(LORA_BUSY, INPUT); // Устанавливаем BUSY пин как вход
-        if (_log) {
+        if (_log)
+        {
             _log->addLog("LoRaComm: BUSY state before init: " + String(digitalRead(LORA_BUSY)));
         }
 
@@ -95,128 +69,147 @@ public:
             LORA_CODING_RATE,
             LORA_SYNC_WORD,
             LORA_TX_POWER,
-            LORA_PREAMBLE_LEN
-        );
+            LORA_PREAMBLE_LEN);
 
-        if (state != RADIOLIB_ERR_NONE) {
-            if (_log) {
+        if (state != RADIOLIB_ERR_NONE)
+        {
+            if (_log)
+            {
                 _log->addLog("LoRaComm: Ошибка инициализации LoRa: " + String(state));
             }
             return false;
         }
 
-        if (_log) {
+        if (_log)
+        {
             _log->addLog("LoRaComm: LoRa модуль успешно инициализирован.");
         }
-
-        // Настройка прерывания на DIO1 для приема
-        radio.setDio1Action(LoRaComm::onReceive);
-        // Переходим в режим приема после инициализации
-        radio.startReceive();
-        if (_log) {
+        radio.setDio1Action(LoRaComm::onReceive); // Настройка прерывания на DIO1 для приема
+        radio.startReceive();                     // Переходим в режим приема после инициализации
+        if (_log)
+        {
             _log->addLog("LoRaComm: Переход в режим приема.");
         }
 
         return true;
     }
 
-    // Метод для отправки пакета
-    bool sendPacket(LoRaPacket& packet) {
-        packet.senderId = myDeviceId; // Устанавливаем ID отправителя
-        packet.checksum = calculateChecksum(packet); // Рассчитываем контрольную сумму
-
-        if (_log) {
-            _log->addLog("LoRaComm: Отправка пакета. ID: " + String(packet.packetId) +
-                         ", Тип: " + String(packet.commandType) + ", Значение: " + String(packet.value));
-        }
-
-        // Временно выключаем режим приема, чтобы отправить
+    void applySettings(int sf, int cr, float bw)
+    {
         radio.standby();
-
-        int state = radio.transmit((uint8_t*)&packet, sizeof(packet));
-
-        // Сразу после отправки возвращаемся в режим приема
-        radio.startReceive();
-
-        if (state == RADIOLIB_ERR_NONE) {
-            if (_log) {
-                _log->addLog("LoRaComm: Пакет успешно отправлен.");
-            }
-            return true;
-        } else if (state == RADIOLIB_ERR_TX_TIMEOUT) {
-            if (_log) {
-                _log->addLog("LoRaComm: Ошибка отправки: Таймаут (код: " + String(state) + ").");
-            }
-        } else {
-            if (_log) {
-                _log->addLog("LoRaComm: Ошибка отправки: " + String(state));
-            }
-        }
-        return false;
+        radio.setSpreadingFactor(sf);
+        radio.setCodingRate(cr);
+        radio.setBandwidth(bw);
+        radio.startReceive(); // обязательно после настройки
+        currentSF = sf;
+        currentCR = cr;
+        currentBW = bw;
+        _log->addLog("LoRaComm: Применены настройки LoRa: SF=" + String(sf) +
+                     ", CR=" + String(cr) +
+                     ", BW=" + String(bw, 1) + "kHz\n\n");
     }
 
-    // Метод для обработки полученного пакета (вызывать в loop())
-    bool parseReceivedPacket(LoRaPacket& outPacket) {
-        if (!packetReceivedFlag) {
-            return false; // Нет нового пакета
+    // Новый интерфейс: шлём любой Packet*
+    template <typename P>
+    bool sendPacket(const P &pkt, uint8_t receiverId)
+    {
+        // _log->addLog("[DEBUG] Sending packet to " + String(receiverId) + " packetType=" + String((char)pkt.packetType) + ", payloadLen=" + String(pkt.payloadLen));
+
+        LoRaPacket frame;
+        memset(&frame, 0, sizeof(frame));
+        size_t len = packIntoLoRa(myDeviceId, receiverId, pkt, frame);
+        // _log->addLog("[DEBUG] LoRa settings: SF=" + String(currentSF) +
+        //              ", CR=" + String(currentCR) +
+        //              ", BW=" + String(currentBW, 1) + "kHz" +
+        //              ", TX=" + String(currentTX) +
+        //              ", Freq=" + String(currentFreq, 3) + "MHz. Transmitt len=" + String(len));
+
+        radio.standby();
+        int st = radio.transmit((uint8_t *)&frame, len);
+        radio.startReceive();
+        // _log->addLog("PACKET DEBUG: type=" + String((char)pkt.packetType) +
+        //              ", id=" + String(pkt.packetId) +
+        //              ", payloadLen=" + String(pkt.payloadLen) +
+        //              ", size=" + String(sizeof(pkt)));
+        String hexDump;
+        uint8_t *bytes = reinterpret_cast<uint8_t *>(&frame);
+        for (size_t i = 0; i < len; ++i)
+        {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", bytes[i]);
+            hexDump += buf;
         }
+        // _log->addLog("[DEBUG] Raw packet bytes: " + hexDump);
 
-        packetReceivedFlag = false; // Сбрасываем флаг
+        _log->addLog("[DEBUG] sendPacket: Status=" + String(st) + ", len=" + String(len) + ":" + LoRaPacketToStr(frame) + "Raw packet bytes: " + hexDump + "\n\n");
+        return (st == RADIOLIB_ERR_NONE);
+    }
 
-        // Проверяем наличие пакета и его размер
-        int packetSize = radio.getPacketLength();
-        if (packetSize == 0) {
-            //_log->addLog("LoRaComm: Получен пустой пакет."); // Слишком много сообщений
+    // Парсит транспорт, возвращает raw hdr + payloadBuf
+    bool parseReceivedPacket(uint8_t &senderId, PacketBase &hdr, uint8_t *payloadBuf)
+    {
+        if (!packetReceivedFlag)
+            return false;
+        packetReceivedFlag = false;
+
+        int len = radio.getPacketLength();
+        if (len > sizeof(LoRaPacket))
+        {
+            _log->addLog("[parseReceivedPacket] Invalid packet length=" + String(len));
             return false;
         }
-        if (packetSize != sizeof(LoRaPacket)) {
-            if (_log) {
-                _log->addLog("LoRaComm: Неверный размер пакета: " + String(packetSize) + " (ожидалось: " + String(sizeof(LoRaPacket)) + ")");
-            }
+        if (len <= 0)
+        {
+            return false; // Нет данных для чтения
+        }
+
+        uint8_t rawBuf[sizeof(LoRaPacket)];
+        memset(rawBuf, 0, sizeof(rawBuf)); // 🔐 защита от мусора
+
+        if (radio.readData(rawBuf, len) != RADIOLIB_ERR_NONE)
+        {
+            _log->addLog("[parseReceivedPacket] Failed to read raw data");
             return false;
         }
 
-        // Читаем пакет
-        int state = radio.readData((uint8_t*)&outPacket, sizeof(outPacket));
+        radio.startReceive(); // обязательно сбрасываем
 
-        if (state == RADIOLIB_ERR_NONE) {
-            // Проверяем контрольную сумму
-            uint8_t receivedChecksum = outPacket.checksum;
-            outPacket.checksum = 0; // Временно обнуляем для расчета
-            uint8_t calculatedChecksum = calculateChecksum(outPacket);
-            outPacket.checksum = receivedChecksum; // Восстанавливаем
+        LoRaPacket frame{};
+        memcpy((uint8_t *)&frame, rawBuf, sizeof(LoRaPacket)); // ⚠️ копируем ВСЮ структуру, не len!
 
-            if (receivedChecksum != calculatedChecksum) {
-                if (_log) {
-                    _log->addLog("LoRaComm: Ошибка контрольной суммы! Получено: " + String(receivedChecksum) + ", Ожидалось: " + String(calculatedChecksum));
-                }
-                return false;
-            }
+        //_log->addLog("MC: Received raw LoRa frame, trying to unpack..." + LoRaPacketToStr(frame));
 
-            if (_log) {
-                _log->addLog("LoRaComm: Пакет получен. ID: " + String(outPacket.packetId) +
-                             ", Отправитель: " + String(outPacket.senderId) +
-                             ", Тип: " + String(outPacket.commandType) +
-                             ", Значение: " + String(outPacket.value) +
-                             ", RSSI: " + String(radio.getRSSI()) +
-                             ", SNR: " + String(radio.getSNR()));
-            }
-            return true;
-        } else if (state == RADIOLIB_ERR_CRC_MISMATCH) {
-            if (_log) {
-                _log->addLog("LoRaComm: CRC ошибка в пакете (код: " + String(state) + ").");
-            }
-        } else {
-            if (_log) {
-                _log->addLog("LoRaComm: Ошибка при чтении пакета: " + String(state));
+        uint8_t receiverId = 0;
+        if (!unpackLoRa(frame, senderId, receiverId, hdr, payloadBuf))
+        {
+            _log->addLog("[parseReceivedPacket]  unpackLoRa failed, senderId=" + String(senderId) +
+                         ", receiverId=" + String(receiverId) +
+                         ", packetType=" + String((char)hdr.packetType) +
+                         ", packetId=" + String(hdr.packetId) +
+                         ", payloadLen=" + String(hdr.payloadLen));
+            return false;
+        }
+        else
+        {
+            if (receiverId == myDeviceId)
+            {
+                _log->addLog("[parseReceivedPacket] " + LoRaPacketToStr(frame));
             }
         }
-        return false;
+
+        if (receiverId != myDeviceId && receiverId != 0xFF)
+        {
+            //_log->addLog("MC: Packet not for us (to=" + String(receiverId) + ")");
+            return false;
+        }
+
+        return true;
     }
 
     // Статический флаг и статическая функция обработчика прерывания
     static volatile bool packetReceivedFlag;
-    static void onReceive() {
+    static void onReceive()
+    {
         packetReceivedFlag = true;
     }
 };

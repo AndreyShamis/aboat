@@ -1,37 +1,83 @@
 #pragma once
-// motor.hpp
 #include <Arduino.h>
 #include <ESP32Servo.h>
-#include "settings.h"
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include "settings.h"
 
-#define motorStepInterval  5  // ms
-#define motorStepSize  2
-
-#define MIN_BIDIRECTIONAL 1500
-
-enum ESCType {
+enum ESCType
+{
     ESC_UNIDIRECTIONAL,
     ESC_BIDIRECTIONAL
 };
-struct MotorConfig {
-    ESCType escType;
+
+enum MotorSide
+{
+    MOTOR_SIDE_LEFT,
+    MOTOR_SIDE_RIGHT
 };
 
-class BoatMotor {
+class BoatMotor
+{
 public:
+    ESCType escType = ESC_UNIDIRECTIONAL;
+    int motor_pin = -1;
+    MotorSide side;
+    String sensorAddress; // хранит строку адреса датчика
 
-
-    ESCType escType;
-    void begin(uint8_t pin) {
-        _servo.setPeriodHertz(50);
-        _servo.attach(pin, 1000, 2000);
-        ESCType escType = ESCType::ESC_BIDIRECTIONAL; // Default to unidirectional
+    void setPin(uint8_t pin)
+    {
+        motor_pin = pin;
     }
 
-    void setTargetPwm(int pwm) {
+    uint8_t getPin() const
+    {
+        return motor_pin;
+    }
+
+    void begin(uint8_t pin, MotorSide motorSide)
+    {
+        motor_pin = pin;
+        side = motorSide;
+
+        // Настройка серво
+        _servo.setPeriodHertz(50);
+        _servo.attach(pin, 1000, 2000);
+
+        // Чтение адреса из Preferences
+        Preferences prefs;
+        prefs.begin("boatcfg", true);
+        String esc;
+        if (side == MOTOR_SIDE_LEFT)
+        {
+            sensorAddress = prefs.getString("l_addr", "");
+            esc = prefs.getString("l_esc", "uni");
+        }
+        else
+        {
+            sensorAddress = prefs.getString("r_addr", "");
+            esc = prefs.getString("r_esc", "uni");
+            escType = (esc == "bi") ? ESC_BIDIRECTIONAL : ESC_UNIDIRECTIONAL;
+        }
+        Serial.println("Motor initialized on pin " + String(pin) + ", side: " + (side == MOTOR_SIDE_LEFT ? "left" : "right") + ", ESC type: " + esc);
+        if (esc == "bi")
+        {
+            escType = ESC_BIDIRECTIONAL;
+            setTargetPwm(1500); // Устанавливаем начальное значение для биполярного ESC
+        }
+        else
+        {
+            escType = ESC_UNIDIRECTIONAL;
+            setTargetPwm(1000); // Устанавливаем начальное значение для биполярного ESC
+        }
+        prefs.end();
+    }
+
+    void setTargetPwm(int pwm)
+    {
         _targetPwm = constrain(pwm, 1000, 2000);
-        if (_currentPwm < 0) {
+        if (_currentPwm < 0)
+        {
             _currentPwm = _targetPwm;
             _servo.writeMicroseconds(_currentPwm);
         }
@@ -46,30 +92,33 @@ public:
         if (millis() - _lastStep >= motorStepInterval) {
             _lastStep = millis();
             if (_currentPwm != _targetPwm) {
-                if (_targetPwm < _currentPwm) {
-                    _currentPwm = _targetPwm;
-                } else {
-                    int delta = _targetPwm - _currentPwm;
-                    int step = (abs(delta) < motorStepSize) ? delta : motorStepSize;
-                    _currentPwm += step;
-                }
+                int delta = _targetPwm - _currentPwm;
+                int step = (abs(delta) < motorStepSize) ? delta : (delta > 0 ? motorStepSize : -motorStepSize);
+                _currentPwm += step;
                 _servo.writeMicroseconds(_currentPwm);
             }
         }
     }
-    void toJSON(JsonObject& json) const {
+
+
+    void toJSON(JsonObject &json, float temp = -127.0) const
+    {
         json["target"] = _targetPwm;
         json["current"] = _currentPwm;
         json["esc_type"] = (escType == ESC_UNIDIRECTIONAL) ? "uni" : "bi";
+        json["sensor"] = sensorAddress;
+        json["temp"] = isnan(temp) ? -127.0 : temp;
     }
+
 private:
     Servo _servo;
     int _targetPwm = 1000;
     int _currentPwm = -1;
     unsigned long _lastStep = 0;
+
+    static constexpr int motorStepInterval = 5;
+    static constexpr int motorStepSize = 2;
 };
-
-
 
 // // enum MotorState {
 // //   MOTOR_STOP,
@@ -82,7 +131,6 @@ private:
 // const int HIGH_ZONE = 1910;
 
 // const int PWM_BROKER = 1010;
-
 
 // MotorState motorState;
 // Servo escLeft;

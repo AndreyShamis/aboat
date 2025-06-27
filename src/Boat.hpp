@@ -1,3 +1,4 @@
+// Boat.hpp
 #pragma once
 #include <Arduino.h>
 #include <vector>
@@ -20,10 +21,20 @@
 #include "FS.h"
 #include "SPIFFS.h"
 #include "lora_comm.hpp"
+#include <Adafruit_PWMServoDriver.h>
+#include "freertos/queue.h"
+#include "PacketClasses.hpp"
 
 using namespace ArduinoJson;
-#define BOAT_DEVICE_ID 0x01
-class Boat: LogInterface
+
+static unsigned long lastChannelPrint = 0;
+const unsigned long channelPrintInterval = 2000; // 2.5 секунды
+static unsigned long lastRandomRudderTime = 0;
+static unsigned long nextRandomRudderDelay = 0;
+static unsigned long lastControlUpdate = 0;
+const unsigned long controlInterval = 100; // 100 мс = 10 Гц
+
+class Boat : LogInterface
 {
 
 public:
@@ -41,33 +52,77 @@ public:
     CommandParser parser;
     GNSSManager gnss;
     bool updateStarted = false;
-    LoRaComm* loraComm; // Новый объект для LoRa связи
+    LoRaComm *loraComm; // Новый объект для LoRa связи
+    Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
 
-    // Boat() : sensor(0x48), gnss(Serial2) {}
+    TaskHandle_t sendStatusTaskHandle = nullptr;
+    bool statusTaskRunning = false;
+
+    bool waitingForASAAck = false;
+    bool asaActive = false;
+    unsigned long asaProposalTime = 0;
+    unsigned long lastPacketReceived = 0; // обновляется при каждом принятом пакете
+    unsigned long asaLastSwitchTime = 0;
+    int currentSF = LORA_SF;
+    int currentCR = LORA_CODING_RATE;
+    float currentBW = LORA_BANDWIDTH;
+
+    void onTelemetry(const PacketTelemetry &tel)
+    {
+        addLog("Received telemetry fragment: len=" + String(tel.payloadLen));
+        // собрать, parse и т.д.
+    }
+
+    void onInfoEngine(const PacketInfoEngine &info)
+    {
+        addLog("InfoEngine packet received");
+    }
+
+    void onStatus(const PacketStatus &st)
+    {
+        addLog("Status packet received");
+    }
+
+    void onAck(const PacketAck &ack)
+    {
+        addLog("ACK for ID=" + String(ack.ackedId));
+    }
+
+    void onConfig(const PacketConfig &cfg)
+    {
+        addLog("Config packet received");
+    }
+
+    void onNav(const PacketNav &nav)
+    {
+        addLog("Nav packet received");
+    }
+
+    void onHeartbeat(const PacketHeartbeat &hb)
+    {
+        addLog("Heartbeat packet received");
+    }
+
     Boat() : sensor(0x48), gnss(Serial2)
     {
-        loraComm = new LoRaComm(BOAT_DEVICE_ID, this); 
-
+        loraComm = new LoRaComm(BOAT_DEVICE_ID, this);
     }
-    ~Boat() {
+    ~Boat()
+    {
         delete loraComm;
     }
 
-    
     void setup()
     {
         delay(3); // Задержка для отладки
         addLog("RAM: Free heap: " + String(ESP.getFreeHeap()) + " bytes");
         addLog("Flash: Sketch size:" + String(ESP.getSketchSize()) + " bytes / Free: " + String(ESP.getFreeSketchSpace()) + " bytes");
 
-        addLog("Enabling servo power ,,,,,,,,,,,,,,,");
-        pinMode(SERVO_PWR_PIN, OUTPUT);
-        digitalWrite(SERVO_PWR_PIN, HIGH); // Включаем питание сервоприводов
+        // addLog("Enabling servo power ,,,,,,,,,,,,,,,");
+        // pinMode(SERVO_PWR_PIN, OUTPUT);
+        // digitalWrite(SERVO_PWR_PIN, HIGH); // Включаем питание сервоприводов
         battery.setup();
         gnss.begin();
-
-        addLog("Strarting setup iBUS FlySky...");
-        flysky.begin();
 
         addLog("Starting I2C bus scan...");
         Wire.begin(I2C_SDA, I2C_SCL);
@@ -92,13 +147,11 @@ public:
 
         if (!ina3221.begin(0X41, &Wire)) // Инициализация INA3221 на адресе 0x41
         {
-            Serial.println("❌ INA3221 not found at address 0x41");
-            addLog("INA3221 not found at address 0x41");
+            addLog("-INA3221 not found at address 0x41");
         }
         else
         {
-            addLog("INA3221 found at address 0x41");
-            Serial.println("✅ INA3221 found at address 0x41");
+            addLog("+INA3221 found at address 0x41");
             ina3221.setAveragingMode(INA3221_AVG_16_SAMPLES);
             for (uint8_t i = 0; i < 3; i++)
             {
@@ -111,13 +164,11 @@ public:
         }
         if (!ina3221_low.begin(0X43, &Wire)) // Инициализация INA3221 на адресе 0x43
         {
-            Serial.println("❌ INA3221 LOW not found at address 0x43");
-            addLog("INA3221 LOW not found at address 0x43");
+            addLog("-INA3221 LOW not found at address 0x43");
         }
         else
         {
-            addLog("INA3221v  LOW found at address 0x43");
-            Serial.println("✅ INA3221 found at address 0x43");
+            addLog("+INA3221v LOW found at address 0x43");
             ina3221_low.setAveragingMode(INA3221_AVG_16_SAMPLES);
             for (uint8_t i = 0; i < 3; i++)
             {
@@ -139,39 +190,44 @@ public:
 
         rudder.begin();
         rudder.setTrim(0);
+        engine.begin(MOTOR_LEFT, MOTOR_RIGHT);
         addLog("Boat finish setup");
 
         parser.registerCommand("M", [this](const String &arg)
                                {
-                                   addLog("[CMD M] Motor power set to: " + arg);
-                                   // Преобразуй аргумент в int и делай что хочешь
-                                   int power = arg.toInt();
-                                   //Serial.printf("Setting motor power to %d\n", power);
-                                   // motor.setPower(power);
-                                   engine.apply(power, 0); });
+                                    addLog("[CMD M] Motor power set to: " + arg);
+                                    int power = arg.toInt();
+                                    engine.apply(power, 1500); });
 
+        parser.registerCommand("E", [this](const String &arg)
+                               {
+                                    addLog("[CMD E] Enfine power set to: " + arg);
+                                        if (arg=="S") {
+                                            addLog("[CMD E] Engine stopped");
+                                            engine.setState(MotorEngineControl::MOTOR_STOP);
+                                        } else if(arg=="F") {
+                                            addLog("[CMD E] Engine forward");
+                                            engine.setState(MotorEngineControl::MOTOR_FORWARD);
+                                        } else if(arg=="R") {
+                                            addLog("[CMD E] Engine reverse");
+                                            engine.setState(MotorEngineControl::MOTOR_REVERSE);
+                                        } else {
+                                            addLog("[CMD E] Unknown engine command: " + arg);
+                                        } });
         parser.registerCommand("R", [this](const String &arg)
                                {
-                                   addLog("[CMD R] Rudder angle set to: " + arg);
-                                   int angle = arg.toInt();
-                                   //Serial.printf("Setting rudder angle to %d\n", angle);
-                                   rudder.setAngle(angle); });
+                                    addLog("[CMD R] Rudder angle set to: " + arg);
+                                    int angle = arg.toInt();
+                                    rudder.setAngle(angle); });
 
         parser.registerCommand("P", [this](const String &arg)
                                {
-                                   addLog("[CMD R] Oil pump set to: " + arg);
-                                   int speed = arg.toInt();
-                                   oilPump.setSpeed(speed); });
+                                    addLog("[CMD R] Oil pump set to: " + arg);
+                                    int speed = arg.toInt();
+                                    oilPump.setSpeed(speed); });
 
         addLog("Commands registered: M (motor), R (rudder), P (oil pump)");
 
-        // Инициализация нового класса LoRaComm
-        if (!loraComm->begin()) {
-            addLog(" - ERROR! LoRaComm не инициализирован.");
-        } else {
-            addLog(" + LoRaComm успешно инициализирован.");
-        }
-        
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
         addLog("Free sketch space: " + String(ESP.getFreeSketchSpace()) + " bytes");
@@ -186,6 +242,33 @@ public:
         addLog("MAC address: " + String(ESP.getEfuseMac(), HEX));
         printSPIFFSInfo();
         // listSPIFFSFiles();
+        addLog("Starting PWM for servos...");
+
+        bool servoStarted = pwm.begin();
+        if (!servoStarted)
+        {
+            addLog(" - ERROR! failed to start Adafruit_PWMServoDriver.");
+        }
+        else
+        {
+            addLog(" + Adafruit_PWMServoDriver succesfully connected to module.");
+            pwm.setPWMFreq(50);
+        }
+
+        // Инициализация нового класса LoRaComm
+        if (!loraComm->begin())
+        {
+            addLog(" - ERROR! LoRaComm не инициализирован.");
+        }
+        else
+        {
+            // loraAdapt = new AdaptiveLoRaManager(loraComm, this);
+            // loraAdapt->begin();
+            addLog(" + LoRaComm успешно инициализирован.");
+        }
+
+        addLog("Strarting setup iBUS FlySky...");
+        flysky.begin();
         addLog("Boat initialized successfully.");
     }
 
@@ -198,6 +281,9 @@ public:
             addLog("Update in progress, skipping keep() cycle.");
             return;
         }
+        // if (loraAdapt)
+        //     loraAdapt->loop();
+
         battery.prepareForRead();
         gnss.update();
         // engine.checkMotorStateChange(ch1, ch2, ch3, ch4);
@@ -205,32 +291,17 @@ public:
         //  rudder.update();      in main
         // oilPump.update(motor1Temp, motor2Temp, radiatorTemp);
         battery.readVoltage();
-        checkFailsafeTransition();
+
         static unsigned long lastOilPumpUpdate = 0;
         static unsigned long VuPDATE = 0;
 
         if (millis() - lastOilPumpUpdate >= BOAT_TMR_OIL_PUMP_UPDATE_TIME)
         {
-            lastOilPumpUpdate = millis();
-
-            float tMotorAvg = (temps.get(MOTOR1) + temps.get(MOTOR2)) / 2.0;
-            float tRad = temps.get(MOTOR_RAD);
             int percent = 0;
-
-            if (tMotorAvg > 60.0f)
+            lastOilPumpUpdate = millis();
+            if (temps.get(MOTOR1) > 35 || temps.get(MOTOR2) > 35)
             {
-                percent = 0;
-                addLog("Oil pump OFF: motor overheat");
-            }
-            else if (tMotorAvg >= 40.0f)
-            {
-                percent = map((int)tMotorAvg, 40, 60, 100, 100);
-                if (tRad > 50.0f)
-                {
-                    percent = percent * 0.7;
-                    addLog("Oil pump speed reduced due to high radiator temp");
-                }
-                addLog("Oil pump updated from keep(): " + String(percent) + "%");
+                percent = 90;
             }
             else
             {
@@ -248,32 +319,293 @@ public:
             time_t now = time(nullptr);
             addLog("System time:" + String(now));
         }
-        // Обработка входящих LoRa пакетов в цикле keep()
-        LoRaPacket receivedPacket;
-        if (loraComm->parseReceivedPacket(receivedPacket)) {
-            // Здесь обрабатываем полученный пакет
-            // Например:
-            if (receivedPacket.receiverId == BOAT_DEVICE_ID || receivedPacket.receiverId == 0xFF) { // Для меня или широковещательный
 
-                addLog("Boat: Получен LoRa пакет для меня. Команда: " + String(receivedPacket.commandType) + ", Значение: " + String(receivedPacket.value));
-
-                // Пример обработки команды
-                if (receivedPacket.commandType == CMD_SET_SPEED) {
-                    engine.apply(receivedPacket.value, 0);
-                    addLog("Boat: Установлена скорость двигателя: " + String(receivedPacket.value));
-                }
-                // Отправка ACK
-                LoRaPacket ackPacket = {
-                    .senderId = BOAT_DEVICE_ID,
-                    .receiverId = receivedPacket.senderId,
-                    .commandType = CMD_ACK,
-                    .value = (int16_t)receivedPacket.packetId, // Подтверждаем ID полученного пакета
-                    .packetId = (uint16_t)(millis() & 0xFFFF), // Новый ID для ACK пакета
-                    .checksum = 0 // Будет рассчитана в sendPacket
-                };
-                loraComm->sendPacket(ackPacket);
+        static unsigned long lastStatusJsonTime = 0;
+        if (millis() - lastStatusJsonTime > 1200000 && !statusTaskRunning)
+        {
+            lastStatusJsonTime = millis();
+            if (sendStatusTaskHandle == nullptr || eTaskGetState(sendStatusTaskHandle) == eDeleted)
+            {
+                xTaskCreatePinnedToCore(
+                    Boat::sendStatusJsonTaskWrapper,
+                    "SendStatus",
+                    8192,
+                    this,
+                    1,
+                    &sendStatusTaskHandle,
+                    1);
             }
         }
+
+        // раз в 20 сек отправляем “ping” на пульт
+        if (millis() - lastPingSent >= 5121)
+        {
+            PacketBase ping{};
+            ping.packetType = CMD_PING;
+            ping.packetId = nextPacketId++;
+            ping.payloadLen = 0;
+            loraComm->sendPacket(ping, MISSION_CONTROL_ID);
+
+            addLog("🔄 Ping → MC");
+
+            lastPingSent = millis();
+        }
+        // Например, каждые 30 сек, если ASA не активен, и нет ожидания ACK:
+        uint8_t senderId;
+        PacketBase hdr;
+        uint8_t payloadBuf[MAX_LORA_PAYLOAD];
+
+        // пытаемся распарсить
+        if (loraComm->parseReceivedPacket(senderId, hdr, payloadBuf))
+        {
+            float snr = loraComm->getRadio().getSNR();
+            float rssi = loraComm->getRadio().getRSSI();
+            addLog("profile:" + String(currentProfileIndex) + " .RSSI:" + String(rssi) + "dBm, SNR=" + String(snr, 1) + "dB.  type=" + String((char)hdr.packetType) + " from=" + String(senderId) + " id=" + String(hdr.packetId) + " PacketBase: " + hdr.toString());
+
+            // Диспетчер внутри Boat
+            switch (hdr.packetType)
+            {
+
+            case CMD_COMMAND_STRING:
+            {
+                PacketCommand cmd{};
+                cmd.packetType = hdr.packetType;
+                cmd.packetId = hdr.packetId;
+                cmd.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&cmd) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                // выполнить строку команды
+                String s;
+                for (size_t i = 0; i < cmd.payloadLen; ++i)
+                {
+                    s += char(payloadBuf[i]);
+                }
+                parser.processLine(s);
+                break;
+            }
+
+            case CMD_TELEMETRY_FRAGMENT:
+            {
+                PacketTelemetry tel{};
+                tel.packetType = hdr.packetType;
+                tel.packetId = hdr.packetId;
+                tel.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&tel) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                onTelemetry(tel);
+                break;
+            }
+
+            case CMD_INFO_ENGINE:
+            {
+                PacketInfoEngine info{};
+                info.packetType = hdr.packetType;
+                info.packetId = hdr.packetId;
+                info.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&info) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                onInfoEngine(info);
+                break;
+            }
+
+            case CMD_STATUS:
+            {
+                PacketStatus st{};
+                st.packetType = hdr.packetType;
+                st.packetId = hdr.packetId;
+                st.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&st) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                onStatus(st);
+                break;
+            }
+
+            case CMD_ACK:
+            {
+                PacketAck ackIn{};
+                ackIn.packetType = hdr.packetType;
+                ackIn.packetId = hdr.packetId;
+                ackIn.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&ackIn) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                onAck(ackIn);
+                break;
+            }
+
+            case CMD_CONFIG:
+            {
+                PacketConfig cfg{};
+                cfg.packetType = hdr.packetType;
+                cfg.packetId = hdr.packetId;
+                cfg.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&cfg) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                onConfig(cfg);
+                break;
+            }
+
+            case CMD_NAV:
+            {
+                PacketNav nav{};
+                nav.packetType = hdr.packetType;
+                nav.packetId = hdr.packetId;
+                nav.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&nav) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                onNav(nav);
+                break;
+            }
+
+            case CMD_HEARTBEAT:
+            {
+                PacketHeartbeat hb{};
+                hb.packetType = hdr.packetType;
+                hb.packetId = hdr.packetId;
+                hb.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&hb) + sizeof(PacketBase),
+                       payloadBuf,
+                       hdr.payloadLen);
+                onHeartbeat(hb);
+                break;
+            }
+            case CMD_PONG:
+            {
+                payloadBuf[hdr.payloadLen] = '\0'; // безопасное завершение
+                addLog("Received PONFsendpaG from MC: ");
+                // loraAdapt->onPongReceived();
+                break;
+            }
+            case CMD_REPOSNCE_ASA:
+            {
+                addLog("✅ ASA response received. Applying higher LoRa profile");
+
+                waitingForASAAck = false;
+                asaActive = true;
+                asaLastSwitchTime = millis();
+
+                if (currentProfileIndex < LORA_PROFILE_COUNT - 1)
+                {
+                    currentProfileIndex++;
+                    applyProfile(currentProfileIndex);
+                }
+                else
+                {
+                    addLog("⚠️ Already at max LoRa profile, skipping upgrade");
+                }
+
+                break;
+                // addLog("Received ASA response from MC");
+                // loraAdapt->onPongReceived();
+                // break;
+            }
+            case CMD_GET_BOAT_STATUS:
+            {
+                sendStatusJsonFragmentsTask();
+                break;
+            }
+            case CMD_PING:
+            {
+                addLog("🔄 Ping ← MC");
+                break;
+            }
+            case CMD_REQUEST_INFO:
+            {
+                // Универсальный “P” запрос — в payloadBuf[0] лежит нужный код ('T','I','S','F','G','D'…)
+                CommandType what = static_cast<CommandType>(payloadBuf[0]);
+                switch (what)
+                {
+
+                //  ——————————————————————————————————————————————————————————
+                // Телеметрия / статус лодки (JSON-фрагменты)
+                //  ——————————————————————————————————————————————————————————
+                case CMD_BOAT_STATUS_REPORT:
+                { // 'T' или 'D'
+                    sendStatusJsonFragmentsTask();
+                    break;
+                }
+                //  ——————————————————————————————————————————————————————————
+                // Информация о двигателе
+                //  ——————————————————————————————————————————————————————————
+                case CMD_INFO_ENGINE:
+                { // 'I'
+                    PacketInfoEngine info{};
+                    info.packetType = CMD_INFO_ENGINE;
+                    info.packetId = nextPacketId++;
+                    // заполняем поля info... (например, текущие обороты, напряжение и т.п.)
+                    loraComm->sendPacket(info, senderId);
+                    break;
+                }
+                //  ——————————————————————————————————————————————————————————
+                // Конфигурация
+                //  ——————————————————————————————————————————————————————————
+                case CMD_CONFIG:
+                { // 'F'
+                    PacketConfig cfg{};
+                    cfg.packetType = CMD_CONFIG;
+                    cfg.packetId = nextPacketId++;
+                    // заполняем cfg... (например, текущие порты, параметры PID)
+                    loraComm->sendPacket(cfg, senderId);
+                    break;
+                }
+                //  ——————————————————————————————————————————————————————————
+                // Навигация
+                //  ——————————————————————————————————————————————————————————
+                case CMD_NAV:
+                { // 'G'
+                    PacketNav nav{};
+                    nav.packetType = CMD_NAV;
+                    nav.packetId = nextPacketId++;
+                    // заполняем nav… (координаты, курс, скорость)
+                    loraComm->sendPacket(nav, senderId);
+                    break;
+                }
+
+                default:
+                    addLog("Boat: Unsupported info request '" + String((char)what) + "'");
+                    break;
+                }
+                break;
+            }
+
+            default:
+                addLog("Unknown LoRa cmd: " + String((char)hdr.packetType));
+                break;
+            }
+
+            // В конце — отправляем ACK обратно отправителю
+            PacketAck ackOut{};
+            ackOut.packetId = ++nextPacketId;
+            ackOut.payloadLen = 1;
+            ackOut.ackedId = hdr.packetId;
+            loraComm->sendPacket(ackOut, senderId);
+
+            lastPacketReceived = millis();
+        }
+
+        adaptiveLoraUpdate();
+
+        // --- ASA: Проверка ожидания ACK и таймаута канала ---
+        if (waitingForASAAck && millis() - asaProposalTime > 5000)
+        {
+            addLog("❌ ASA: Нет ACK от управления. Отклоняем переход.");
+            waitingForASAAck = false;
+            // Остались на старых параметрах
+        }
+
+        if (asaActive && millis() - lastPacketReceived > 120000)
+        {
+            addLog("⏳ ASA: Таймаут активности. Возврат к дефолтным LoRa-настройкам.");
+            restoreDefaultLoRaSettings();
+            asaActive = false;
+        }
+
         // Синхронизация при первом валидном значении GPS времени
         // if (gnss.gnss.time.isUpdated() && millis() - lastSync > 10000)
         // {
@@ -309,6 +641,162 @@ public:
         //         wakeStart = millis(); // сбрасываем цикл, остаёмся бодрствовать
         //     }
         // }
+        while (Serial.available())
+        {
+            char c = Serial.read();
+            if (c == '\n')
+            {
+                Serial.println("Command processed: " + inputBuffer);
+                parser.processLine(inputBuffer);
+                inputBuffer = "";
+            }
+            else if (c >= 32 && c <= 126)
+            {
+                inputBuffer += c;
+            }
+        }
+        uint16_t ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8, ch9, ch10;
+
+        if (!failsafeTriggered)
+        {
+
+            ch1 = flysky.getChannel(0); // Правый stick X
+            ch2 = flysky.getChannel(1); // Правый stick Y
+            ch3 = flysky.getChannel(2); // Левый stick Y
+            ch4 = flysky.getChannel(3); // Левый stick X
+            ch5 = flysky.getChannel(4);
+            ch6 = flysky.getChannel(5);
+            ch7 = flysky.getChannel(6);
+            // ch8 = flysky.getChannel(7);
+            // ch9 = flysky.getChannel(8);
+            // ch10 = flysky.getChannel(9);
+            //}
+
+            // if (millis() - lastRandomRudderTime >= nextRandomRudderDelay)
+            // {
+            //     lastRandomRudderTime = millis();
+            //     nextRandomRudderDelay = random(20, 2500); // 3–5 секунд
+
+            //     int randomAngle = random(-91, 91); // Угол от -60 до 60
+            //     rudder.setAngle(randomAngle);
+
+            //     // Serial.printf("🎲 Random rudder angle set to: %d°\n", randomAngle);
+            // }
+            if (ch5 < 1900)
+            {
+                engine.setState(engine.MOTOR_STOP);
+            }
+            else
+            {
+                if (ch6 < 1500 && ch6 >= 1000)
+                {
+                    engine.setState(engine.MOTOR_FORWARD);
+                }
+                else if (ch6 > 1500 && ch6 <= 2000)
+                {
+                    engine.setState(engine.MOTOR_REVERSE);
+                }
+                else
+                {
+                    engine.setState(engine.MOTOR_STOP);
+                }
+            }
+            if (millis() - lastChannelPrint > channelPrintInterval)
+            {
+                lastChannelPrint = millis();
+                Serial.printf("CH1: %u | CH2: %u | CH3: %u | CH4: %u\n", ch1, ch2, ch3, ch4);
+                // Serial.printf("CH1: %u | CH2: %u | CH3: %u | CH4: %u -- CH5: %u | CH6: %u | CH7: %u | CH8: %u :::: CH9: %u - CH10: %u\n", ch1, ch2, ch3, ch4, ch5, ch6, ch7, ch8,ch9, ch10);
+            }
+
+            lastControlUpdate = millis();
+            setThrottleLimit(ch7);
+            engine.apply(ch3, ch4);
+
+            if (ch1 >= 1000 && ch1 <= 2000 && flysky.transmitter_on)
+            {
+                rudder.setAngle(map(ch1, 1000, 2000, -90, 90)); // Обновляем руль только если есть валидный сигнал
+            }
+        }
+        else
+        {
+            engine.update(); // Обновляем моторы даже в фейлсейфе, чтобы они остановились
+        }
+        checkFailsafeTransition();
+
+        rudder.update();
+    }
+
+    void adaptiveLoraUpdate()
+    {
+        if (waitingForASAAck || millis() - lastAdaptiveSwitchTime < switchInterval)
+            return;
+
+        lastAdaptiveSwitchTime = millis();
+
+        float snr = loraComm->getRadio().getSNR();
+        float rssi = loraComm->getRadio().getRSSI();
+
+
+        int bestIndex = currentProfileIndex;
+        for (int i = LORA_PROFILE_COUNT - 1; i >= 0; --i)
+        {
+            const auto &p = loraProfiles[i];
+            if (rssi > -95 + i * 3 && snr > 1 + i)
+            { // чем выше индекс, тем более требовательный профиль
+                bestIndex = i;
+                break;
+            }
+        }
+
+        if (bestIndex != currentProfileIndex)
+        {
+            String direction = bestIndex > currentProfileIndex ? "upgrade" : "downgrade";
+            addLog("[adaptiveLoraUpdate] rssi:" + String(rssi) + " snr:" + String(snr) +
+                   " → Proposing " + direction + " to BEST profile index " + String(bestIndex));
+
+            PacketAsaRequest asaReq{};
+            asaReq.packetType = CMD_REQUEST_ASA;
+            asaReq.packetId = nextPacketId++;
+            asaReq.payloadLen = sizeof(uint8_t);
+            asaReq.profileIndex = bestIndex;
+
+            loraComm->sendPacket(asaReq, MISSION_CONTROL_ID);
+            waitingForASAAck = true;
+            if(direction == "downgrade")
+            {
+                applyProfile(bestIndex);
+                addLog("🔼 ASA: Requesting upgrade to profile index " + String(bestIndex) + " and force update.");
+            }
+            asaProposalTime = millis();
+        }
+    }
+
+    void applyProfile(uint8_t idx)
+    {
+        auto &p = loraProfiles[idx]; // ✅ Сначала получаем ссылку на профиль
+
+        // ✉️ Готовим строку с параметрами
+        char payload[16];
+        snprintf(payload, sizeof(payload), "%d,%d,%.0f", p.spreadingFactor, p.codingRate, p.bandwidth);
+
+        // 📦 Формируем ACK_ASA
+        PacketAck ack{};
+        ack.packetType = CMD_ACK_ASA;
+        ack.packetId = ++nextPacketId;
+        ack.payloadLen = strlen(payload);
+        memcpy(reinterpret_cast<uint8_t *>(&ack) + sizeof(PacketBase), payload, ack.payloadLen);
+
+        // 📤 Отправляем на MC
+        loraComm->sendPacket(ack, MISSION_CONTROL_ID);
+
+        // 🛠 Применяем настройки
+        loraComm->applySettings(p.spreadingFactor, p.codingRate, p.bandwidth);
+    }
+
+    void restoreDefaultLoRaSettings()
+    {
+        addLog("🔁 Восстановление стандартных LoRa параметров...");
+        loraComm->applySettings(LORA_SF, LORA_CODING_RATE, LORA_BANDWIDTH);
     }
 
     void printSPIFFSInfo()
@@ -319,9 +807,9 @@ public:
         size_t usedBytes = SPIFFS.usedBytes();
         size_t freeBytes = totalBytes - usedBytes;
 
-        addLog("Total size: " + String(totalBytes/1024) + " Kbytes");
-        addLog("Used size:  " + String(usedBytes/1024) + " Kbytes");
-        addLog("Free size:  " + String(freeBytes/1024) + " Kbytes");
+        addLog("Total size: " + String(totalBytes / 1024) + " Kbytes");
+        addLog("Used size:  " + String(usedBytes / 1024) + " Kbytes");
+        addLog("Free size:  " + String(freeBytes / 1024) + " Kbytes");
     }
 
     void listSPIFFSFiles()
@@ -344,53 +832,97 @@ public:
         }
     }
 
-    // void syncTimeFromGPS()
-    // {
-    //     if (gnss.gnss.date.isValid() && gnss.gnss.time.isValid())
-    //     {
-    //         struct tm t;
-    //         t.tm_year = gnss.gnss.date.year() - 1900;
-    //         t.tm_mon = gnss.gnss.date.month() - 1;
-    //         t.tm_mday = gnss.gnss.date.day();
-    //         t.tm_hour = gnss.gnss.time.hour() + 3; // GMT+3
-    //         t.tm_min = gnss.gnss.time.minute();
-    //         t.tm_sec = gnss.gnss.time.second();
-    //         t.tm_isdst = 0;
+    void syncTimeFromGPS()
+    {
+        if (gnss.gnss.getDateValid() && gnss.gnss.getTimeValid())
+        {
+            struct tm t;
+            t.tm_year = gnss.gnss.getYear() - 1900;
+            t.tm_mon = gnss.gnss.getMonth() - 1;
+            t.tm_mday = gnss.gnss.getDay();
+            t.tm_hour = gnss.gnss.getHour() + 3; // GMT+3
+            t.tm_min = gnss.gnss.getMinute();
+            t.tm_sec = gnss.gnss.getSecond();
+            t.tm_isdst = 0;
 
-    //         time_t timeSinceEpoch = mktime(&t);
-    //         struct timeval now = {.tv_sec = timeSinceEpoch};
-    //         settimeofday(&now, nullptr);
+            time_t timeSinceEpoch = mktime(&t);
+            struct timeval now = {.tv_sec = timeSinceEpoch};
+            settimeofday(&now, nullptr);
 
-    //         Serial.println("⏰ System time synced from GPS!");
-    //     }
-    // }
+            Serial.println("⏰ System time synced from GPS!");
+        }
+    }
+
+    const size_t maxPayload = sizeof(((LoRaPacket *)nullptr)->payload); // обычно 40
+
+    // Примерная длина заголовка "[XX/YY]" — максимум 9 символов
+    const size_t headerReserve = 10;                             // с запасом
+    const size_t jsonChunkSize = maxPayload - headerReserve - 1; // -1 на '\0'
+
+    static void sendStatusJsonTaskWrapper(void *param)
+    {
+        Boat *boat = static_cast<Boat *>(param);
+        boat->sendStatusJsonFragmentsTask();
+        vTaskDelete(nullptr); // убиваем задачу после выполнения
+    }
+
+    void sendStatusJsonFragmentsTask()
+    {
+        if (statusTaskRunning)
+        {
+            return;
+        }
+        statusTaskRunning = true;
+
+        // Собираем полный JSON
+        String json = getStatusJson();
+        size_t totalLen = json.length();
+        size_t chunks = (totalLen + jsonChunkSize - 1) / jsonChunkSize;
+
+        // Для каждого фрагмента формируем команду
+        for (size_t i = 0; i < chunks; i++)
+        {
+            // Заголовок вида “[i/N]”
+            String header = "[" + String(i) + "/" + String(chunks) + "]";
+
+            // Собственно фрагмент JSON
+            String fragment = json.substring(i * jsonChunkSize, (i + 1) * jsonChunkSize);
+            String payloadStr = header + fragment;
+
+            // Упаковываем в PacketCommand
+            PacketCommand cmd{};
+            cmd.packetType = CMD_TELEMETRY_FRAGMENT;
+            cmd.packetId = nextPacketId++;
+            cmd.payloadLen = payloadStr.length();
+
+            // Копируем payload прямо за заголовок PacketBase
+            memcpy(reinterpret_cast<uint8_t *>(&cmd) + sizeof(PacketBase),
+                   payloadStr.c_str(),
+                   cmd.payloadLen);
+
+            // Отправляем на Mission Control
+            loraComm->sendPacket(cmd, MISSION_CONTROL_ID);
+            delay(10); // небольшой интервал между фрагментами
+        }
+
+        statusTaskRunning = false;
+    }
 
     String getStatusJson()
     {
         JsonDocument doc; // Подбери под размер данных
 
-        float v = 0, a = 0;
-        sensor.read(v, a);
-        doc[F("voltage")] = v;
-        doc[F("current")] = a;
-
-        JsonObject temp = doc[F("temperature")].to<JsonObject>(); //  doc.createNestedObject(F("temperature"));
+        JsonObject temp = doc[F("temperature")].to<JsonObject>();
         temp[F("motor1")] = temps.get(MOTOR1);
         temp[F("motor2")] = temps.get(MOTOR2);
         temp[F("radiator")] = temps.get(MOTOR_RAD);
         temp[F("oil")] = temps.get(OIL);
         temp[F("ambient")] = temps.get(ENV);
 
-        // JsonObject gpsObj = doc[F("gnss")].to<JsonObject>(); //  doc.createNestedObject(F("gps"));
-        // gpsObj[F("lat")] = gps.location.lat();
-        // gpsObj[F("lon")] = gps.location.lng();
-        // gpsObj[F("alt")] = gps.altitude.meters();
-        // gpsObj[F("sats")] = gps.satellites.value();
-
         FusionQuaternion quat = FusionAhrsGetQuaternion(&ahrs);
         FusionEuler euler = FusionQuaternionToEuler(quat);
 
-        JsonObject imu = doc[F("imu")].to<JsonObject>(); // doc.createNestedObject(F("imu"));
+        JsonObject imu = doc[F("imu")].to<JsonObject>();
         imu[F("roll")] = euler.angle.roll;
         imu[F("pitch")] = euler.angle.pitch;
         imu[F("yaw")] = euler.angle.yaw;
@@ -399,8 +931,6 @@ public:
         oilPump.toJSON(pumpObj);
         JsonObject sysObj = doc[F("system")].to<JsonObject>();
         SystemStatus::toExtendedJSON(sysObj);
-        // JsonObject sysObj = doc[F("system")].to<JsonObject>();
-        // SystemStatus::toJSON(sysObj);
 
         JsonObject rudderObj = doc[F("rudder")].to<JsonObject>();
         rudder.toJSON(rudderObj);
@@ -411,7 +941,7 @@ public:
         JsonObject motorObj = doc[F("motor")].to<JsonObject>();
         engine.toJSON(motorObj);
 
-        JsonObject batteryObj = doc[F("battery")].to<JsonObject>();
+        JsonObject batteryObj = doc[F("b")].to<JsonObject>();
         battery.toJson(batteryObj);
 
         JsonObject receiverObj = doc["receiver"].to<JsonObject>();
@@ -439,14 +969,21 @@ public:
         JsonArray logs = doc[F("logs")].to<JsonArray>();
         for (const auto &logEntry : logBuffer)
         {
-            logs.add(logEntry);
+            logs.add(sanitizeLog(logEntry));
         }
 
         String result;
         serializeJson(doc, result);
         return result;
     }
-
+    String sanitizeLog(const String &str)
+    {
+        String cleaned = str;
+        cleaned.replace("\r", "");
+        cleaned.replace("\n", "");
+        cleaned.replace("\x1B", "");
+        return cleaned;
+    }
     void printStatus()
     {
         // float v = 0, a = 0;
@@ -472,7 +1009,7 @@ public:
         if (currentState && failsafeTriggered)
         {
             addLog(" ! Transmitter reconnected");
-            failsafeTriggered = false; // если связь восстановилась — можно снова отслеживать потерю
+            failsafeTriggered = false;
             exitFailsafeMode();
         }
 
@@ -482,6 +1019,8 @@ public:
     void enterFailsafeMode()
     {
         addLog(" ! Entering autonomous mode...");
+
+        engine.setState(engine.MOTOR_STOP); // Останавливаем моторы
     }
 
     void exitFailsafeMode()
@@ -489,7 +1028,7 @@ public:
         addLog(" ! Returning to manual control");
     }
 
-    void addLog(const String &msg) override 
+    void addLog(const String &msg) override
     {
         Serial.println(msg);
         if (logBuffer.size() >= logCapacity)
@@ -606,10 +1145,18 @@ public:
     }
 
 private:
+    String inputBuffer;
+    uint8_t nextPacketId = 0;
     // Приватные члены класса, если нужны
     // Например, для хранения состояния или вспомогательных функций
     bool lastTransmitterState = true; // было ли соединение ранее
     bool failsafeTriggered = false;   // уже обработали событие потери
     static constexpr size_t logCapacity = 90;
     std::vector<String> logBuffer;
+
+    bool failsafeActiveIbus = false; // Активен ли режим failsafe
+    unsigned long lastPingSent = 0;
+    uint8_t currentProfileIndex = 3;
+    unsigned long lastAdaptiveSwitchTime = 0;
+    const unsigned long switchInterval = 8011;
 };

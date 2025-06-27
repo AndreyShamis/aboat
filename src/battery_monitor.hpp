@@ -46,9 +46,7 @@ public:
     }
 
     void toJson(JsonObject& json) const {
-        json["voltage"] = voltageCache;
-        json["raw"] = rawValue;
-        json["millivolts"] = millivolts;
+        json["v"] = voltageCache;
     }
 
 private:

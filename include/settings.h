@@ -1,5 +1,70 @@
+// File include/settings.h
 #pragma once
 #include <RadioLib.h>
+#define LORA_PROFILE_COUNT 20
+
+// Пресеты: от максимально надёжного до максимально быстрого
+static constexpr struct {
+    float bandwidth;
+    int spreadingFactor;
+    int codingRate;
+} loraProfiles[LORA_PROFILE_COUNT] = {
+    {  62.5, 12, 8 },  // 0: 🛟 Ultra Rescue     (~0.28 kbps)
+    {  62.5, 12, 7 },  // 1: Rescue slow        (~0.35 kbps)
+    { 125.0, 12, 7 },  // 2: Rescue             (~0.7 kbps)
+    { 125.0, 11, 7 },  // 3: Remote control     (~1.1 kbps)
+    { 125.0, 11, 5 },  // 4: Stable             (~1.6 kbps)
+    { 125.0, 10, 6 },  // 5: Fallback           (~2.5 kbps)
+    { 125.0, 10, 5 },  // 6: Long range         (~2.9 kbps)
+    { 125.0,  9, 5 },  // 7: Balanced           (~5.2 kbps)
+    { 250.0, 10, 5 },  // 8: Balanced+          (~5.8 kbps)
+    { 250.0,  9, 6 },  // 9: Stable mid         (~7.5 kbps)
+    { 250.0,  9, 5 },  //10: Short link         (~8.5 kbps)
+    { 250.0,  8, 5 },  //11: Short+             (~12.4 kbps)
+    { 250.0,  7, 5 },  //12: Fast mid           (~14.0 kbps)
+    { 500.0,  9, 5 },  //13: High-speed         (~17.1 kbps)
+    { 500.0,  8, 6 },  //14: Very fast +CR      (~21.0 kbps)
+    { 500.0,  8, 5 },  //15: Very fast          (~24.0 kbps)
+    { 500.0,  7, 6 },  //16: Max speed +CR      (~25.0 kbps)
+    { 500.0,  7, 5 },  //17: ⚡ Max speed        (~29.3 kbps)
+    { 250.0,  7, 5 },  //18: Fast+ mid          (~14.0 kbps)
+    { 125.0,  8, 5 },  //19: Special case       (~9.0 kbps, more stable)
+};
+
+
+
+// -----------------------------------------------------------------------------
+// --- СВОЙ ПРОТОКОЛ СООБЩЕНИЙ (буквенные коды для удобства) ---
+// -----------------------------------------------------------------------------
+enum CommandType : uint8_t
+{
+    CMD_NONE = 0, // нет команды
+
+    CMD_COMMAND_STRING = 'C',     // C = Command строка
+    CMD_TELEMETRY_FRAGMENT = 'T', // T = Telemetry фрагмент JSON
+
+    CMD_INFO_ENGINE = 'I', // I = InfoEngine
+    CMD_STATUS = 'S',      // S = Status
+    CMD_CONFIG = 'F',      // F = ConFig
+    CMD_NAV = 'G',         // G = NaVigation
+
+    // CMD_REQUEST_ASA = 'R',          // R = Request ASA (запрос авто-адаптации)
+    CMD_ACK_ASA = 'A', // A = Ack ASA (подтверждение адаптации)
+    CMD_REQUEST_ASA = ')', // ) = Request ASA (запрос авто-адаптации)
+    CMD_REPOSNCE_ASA = '(', 
+    CMD_GET_BOAT_STATUS = 'Q',    // Q = Query boat Status (запрос статуса)
+    CMD_BOAT_STATUS_REPORT = 'D', // D = Data report (отчёт статуса)
+
+    CMD_ACK = 'K',          // K = aCK (универсальное «ок»)
+    CMD_REQUEST_INFO = 'W', // W = request any Info
+    CMD_PING = '-',
+    CMD_PONG = 'O',
+
+};
+
+
+#define BOAT_DEVICE_ID 0x01
+#define MISSION_CONTROL_ID 0x02
 
 #define BOAT_TMR_OIL_PUMP_UPDATE_TIME   360000
 #define BOAT_TMR_STSTEM_PRINT_TIME      3600000
@@ -57,12 +122,12 @@
   #define DEVICE_ID_BASE     0x02
 
   // Для лодки
-  #ifdef IS_BOAT
-    const uint8_t MY_DEVICE_ID = DEVICE_ID_BOAT;
-    const uint8_t TARGET_DEVICE_ID = DEVICE_ID_BASE;
+  #ifdef ROLE_BOAT
+    const uint8_t MY_DEVICE_ID = BOAT_DEVICE_ID;
+    const uint8_t TARGET_DEVICE_ID = MISSION_CONTROL_ID;
   #else // Для базовой станции
-    const uint8_t MY_DEVICE_ID = DEVICE_ID_BASE;
-    const uint8_t TARGET_DEVICE_ID = DEVICE_ID_BOAT;
+    const uint8_t MY_DEVICE_ID = MISSION_CONTROL_ID;
+    const uint8_t TARGET_DEVICE_ID = BOAT_DEVICE_ID;
   #endif  
 
 #elif defined(HW_WROOM)
@@ -95,5 +160,4 @@
 #else
   #error "❌ Unknown hardware target! Define HW_HELTEC or HW_WROOM."
 #endif
-
 

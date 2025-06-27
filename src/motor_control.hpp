@@ -21,13 +21,19 @@ public:
 
     void begin(uint8_t leftPin, uint8_t rightPin)
     {
-        left.begin(leftPin);
-        right.begin(rightPin);
+        left.begin(MOTOR_LEFT, MOTOR_SIDE_LEFT);
+        right.begin(MOTOR_RIGHT, MOTOR_SIDE_RIGHT);
+
     }
 
     void setState(MotorState state)
     {
         motorState = state;
+        if (state == MOTOR_STOP)
+        {
+            apply(0, 1500); // Остановка моторов
+        }
+
     }
 
     void setLimit(int limit)
@@ -59,21 +65,19 @@ public:
     void apply(int throttle, int steer)
     {
         static unsigned long lastDbg = 0;
-
         switch (motorState)
         {
         case MOTOR_STOP:
-            left.setTargetPwm(PWM_MIN);
-            right.setTargetPwm(PWM_MIN);
+            left.setTargetPwm(convertThrottleToPWM(left, PWM_MIN, left.escType));
+            right.setTargetPwm(convertThrottleToPWM(right, PWM_MIN, right.escType));
             break;
 
         case MOTOR_FORWARD:
         {
 
-            int base = mapWithDeadzone(throttle);
             int delta = map(steer, 1000, 2000, -200, 200);
-            int lV = constrain(base + delta, PWM_MIN, pwmLimit);
-            int rV = constrain(base - delta, PWM_MIN, pwmLimit);
+            int lV = constrain(mapWithDeadzone(throttle, left) + delta, PWM_MIN, pwmLimit);
+            int rV = constrain(mapWithDeadzone(throttle, right) - delta, PWM_MIN, pwmLimit);
             left.setTargetPwm(convertThrottleToPWM(left, lV, left.escType));
             right.setTargetPwm(convertThrottleToPWM(right, rV, right.escType));
             //right.setTargetPwm(constrain(base - delta, PWM_MIN, pwmLimit));
@@ -81,18 +85,22 @@ public:
         }
 
         case MOTOR_REVERSE:
-            int base = mapWithDeadzone(throttle);
             int delta = map(steer, 1000, 2000, -200, 200);
-            int lV = constrain(base + delta, PWM_MIN, pwmLimit);
-            int rV = constrain(base - delta, PWM_MIN, pwmLimit);
+            int lV = constrain( mapWithDeadzone(throttle, left) + delta, PWM_MIN, pwmLimit);
+            int rV = constrain(mapWithDeadzone(throttle, right) - delta, PWM_MIN, pwmLimit);
             left.setTargetPwm(convertThrottleToPWM(left, lV, left.escType));
             right.setTargetPwm(convertThrottleToPWM(right, rV, right.escType));
             break;
         }
         if (millis() - lastDbg > 3900) {
-            //Serial.printf("[PWM] %s [L: %d→%d] | R: [%d→%d] LIMIT: %d\n", getMotorStateStr(), left.getCurrentPwm(), left.getTargetPwm(), right.getCurrentPwm(), right.getTargetPwm(), pwmLimit);
+            Serial.printf("[PWM] %s [L: %d→%d] | R: [%d→%d] LIMIT: %d\n", getMotorStateStr(), left.getCurrentPwm(), left.getTargetPwm(), right.getCurrentPwm(), right.getTargetPwm(), pwmLimit);
             lastDbg = millis();
         }
+        update();
+    }
+
+    void update()
+    {
         left.update();
         right.update();
     }
@@ -131,10 +139,20 @@ private:
     MotorState motorState = MOTOR_STOP;
     int pwmLimit = PWM_MAX;
 
-    int mapWithDeadzone(int val)
+    int mapWithDeadzone(int val, const BoatMotor& motor)
     {
-        if (val <= PWM_BROKER)
-            return PWM_MIN;
-        return map(val, PWM_BROKER + 1, 2000, PWM_BROKER, PWM_MAX);
+        if (motor.escType == ESC_BIDIRECTIONAL)
+        {
+            if (val < 1490) return map(val, 1000, 1490, 1000, 1500);
+            if (val > 1510) return map(val, 1510, 2000, 1500, 2000);
+            return 1500; // в зоне мёртвой середины
+        }
+        else
+        {
+            if (val <= PWM_BROKER)
+                return PWM_MIN;
+            return map(val, PWM_BROKER + 1, 2000, PWM_BROKER, PWM_MAX);
+        }
     }
+
 };
