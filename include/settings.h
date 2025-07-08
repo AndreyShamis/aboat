@@ -1,74 +1,72 @@
 // File include/settings.h
 #pragma once
 #include <RadioLib.h>
-#define LORA_PROFILE_COUNT 20
+#define LORA_PROFILE_COUNT 9
 
 // Пресеты: от максимально надёжного до максимально быстрого
 static constexpr struct {
-    float bandwidth;
-    int spreadingFactor;
-    int codingRate;
+    float bandwidth;       // kHz
+    int spreadingFactor;   // 7–12 // SF увеличивает надёжность и дальность, но снижает скорость экспоненциально.
+    int codingRate;        // 5 = 4/5, 6 = 4/6, 7 = 4/7, 8 = 4/8
 } loraProfiles[LORA_PROFILE_COUNT] = {
-    {  62.5, 12, 8 },  // 0: 🛟 Ultra Rescue     (~0.28 kbps)
-    {  62.5, 12, 7 },  // 1: Rescue slow        (~0.35 kbps)
-    { 125.0, 12, 7 },  // 2: Rescue             (~0.7 kbps)
-    { 125.0, 11, 7 },  // 3: Remote control     (~1.1 kbps)
-    { 125.0, 11, 5 },  // 4: Stable             (~1.6 kbps)
-    { 125.0, 10, 6 },  // 5: Fallback           (~2.5 kbps)
-    { 125.0, 10, 5 },  // 6: Long range         (~2.9 kbps)
-    { 125.0,  9, 5 },  // 7: Balanced           (~5.2 kbps)
-    { 250.0, 10, 5 },  // 8: Balanced+          (~5.8 kbps)
-    { 250.0,  9, 6 },  // 9: Stable mid         (~7.5 kbps)
-    { 250.0,  9, 5 },  //10: Short link         (~8.5 kbps)
-    { 250.0,  8, 5 },  //11: Short+             (~12.4 kbps)
-    { 250.0,  7, 5 },  //12: Fast mid           (~14.0 kbps)
-    { 500.0,  9, 5 },  //13: High-speed         (~17.1 kbps)
-    { 500.0,  8, 6 },  //14: Very fast +CR      (~21.0 kbps)
-    { 500.0,  8, 5 },  //15: Very fast          (~24.0 kbps)
-    { 500.0,  7, 6 },  //16: Max speed +CR      (~25.0 kbps)
-    { 500.0,  7, 5 },  //17: ⚡ Max speed        (~29.3 kbps)
-    { 250.0,  7, 5 },  //18: Fast+ mid          (~14.0 kbps)
-    { 125.0,  8, 5 },  //19: Special case       (~9.0 kbps, more stable)
+    {125.0, 12, 7},   // 0: 🛡️ Максимальная надёжность (очень медленно, максимум дальности)
+    {125.0, 11, 7},   // 1: Очень хорошая устойчивость
+    {125.0, 10, 7},   // 2: Надёжный компромисс
+    {250.0,  9, 6},   // 3: Средний режим (городская застройка)
+    {250.0,  8, 6},   // 4: Средний, открытая местность
+    {250.0,  7, 5},   // 5: Быстро, при хорошем сигнале
+    {500.0,  9, 5},   // 6: Скорость + дальность
+    {500.0,  8, 5},   // 7: Очень быстрый, LOS желательно
+    {500.0,  7, 5}    // 8: 🚀 Максимальная скорость (минимум надёжности, максимум throughput)
 };
 
 
+// вручную мэппинг: RSSI >= X → профиль Y
+static constexpr struct {
+    float minRssi;
+    int profileIndex;
+} rssiToProfileTable[] = {
+    { -95.0f, 8 },
+    { -102.0f, 7 },
+    { -105.0f, 6 },
+    { -110.0f, 5 },
+    { -114.0f, 4 },
+    { -115.0f, 3 },
+    { -118.0f, 2 },
+    { -119.0f, 1 },
+    { -120.0f, 0 }
+};
 
-// -----------------------------------------------------------------------------
-// --- СВОЙ ПРОТОКОЛ СООБЩЕНИЙ (буквенные коды для удобства) ---
-// -----------------------------------------------------------------------------
+// количество строк таблицы
+constexpr size_t rssiProfileCount = sizeof(rssiToProfileTable) / sizeof(rssiToProfileTable[0]);
+
+
 enum CommandType : uint8_t
 {
     CMD_NONE = 0, // нет команды
-
     CMD_COMMAND_STRING = 'C',     // C = Command строка
     CMD_TELEMETRY_FRAGMENT = 'T', // T = Telemetry фрагмент JSON
-
     CMD_INFO_ENGINE = 'I', // I = InfoEngine
     CMD_STATUS = 'S',      // S = Status
     CMD_CONFIG = 'F',      // F = ConFig
     CMD_NAV = 'G',         // G = NaVigation
-
-    // CMD_REQUEST_ASA = 'R',          // R = Request ASA (запрос авто-адаптации)
     CMD_ACK_ASA = 'A', // A = Ack ASA (подтверждение адаптации)
     CMD_REQUEST_ASA = ')', // ) = Request ASA (запрос авто-адаптации)
     CMD_REPOSNCE_ASA = '(', 
     CMD_GET_BOAT_STATUS = 'Q',    // Q = Query boat Status (запрос статуса)
     CMD_BOAT_STATUS_REPORT = 'D', // D = Data report (отчёт статуса)
-
     CMD_ACK = 'K',          // K = aCK (универсальное «ок»)
     CMD_REQUEST_INFO = 'W', // W = request any Info
     CMD_PING = '-',
     CMD_PONG = 'O',
-
+    CMD_RSSI_REPORT = 'R', // R = Report RSSI
 };
 
 
 #define BOAT_DEVICE_ID 0x01
 #define MISSION_CONTROL_ID 0x02
-
 #define BOAT_TMR_OIL_PUMP_UPDATE_TIME   360000
 #define BOAT_TMR_STSTEM_PRINT_TIME      3600000
-
 
 #ifdef HW_HELTEC
   #define I2C_SDA 21
@@ -108,13 +106,12 @@ enum CommandType : uint8_t
   #define LORA_DIO1  14
   #define LORA_BUSY  13
 
-
   // --- ПАРАМЕТРЫ LORA ---
-  #define LORA_FREQUENCY      868.0 // МГц (для Европы), 915.0 для США/Австралии
+  #define LORA_FREQUENCY      863.21 //868.0
   #define LORA_BANDWIDTH      125.0 // кГц (можно попробовать 62.5 для большей дальности)
-  #define LORA_SF             11    // Spreading Factor (от 6 до 12, 11/12 для дальности)
+  #define LORA_SF             12    // Spreading Factor (от 6 до 12, 11/12 для дальности)
   #define LORA_CODING_RATE    7     // Coding Rate (от 5 до 8, 7/8 для надежности)
-  #define LORA_SYNC_WORD      RADIOLIB_SX126X_SYNC_WORD_PRIVATE // Важно, чтобы совпадал на всех устройствах
+  #define LORA_SYNC_WORD      0x16 // Важно, чтобы совпадал на всех устройствах
   #define LORA_TX_POWER       22    // dBm (макс. 22 для SX1262, проверьте свои региональные ограничения)
   #define LORA_PREAMBLE_LEN   8     // Длина преамбулы (обычно 8)
 
@@ -160,4 +157,3 @@ enum CommandType : uint8_t
 #else
   #error "❌ Unknown hardware target! Define HW_HELTEC or HW_WROOM."
 #endif
-

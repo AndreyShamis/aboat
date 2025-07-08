@@ -6,6 +6,7 @@
 #include "web_interface.hpp"
 #include "mission_control.hpp"
 #include <SPIFFS.h>
+#include <time.h>
 
 unsigned long lastIMUUpdate = 0;
 const unsigned long imuInterval = 10; // 100Hz обновление фильтра
@@ -59,7 +60,6 @@ void setup()
   ;
 }
 
-
 // ==== Loop ====
 void loop()
 {
@@ -76,7 +76,6 @@ void loop()
     boat.updateStarted = false;
   }
   boat.keep();
-
 
   // Для дебага:
   static unsigned long lastStatusTime = 0;
@@ -126,12 +125,24 @@ void loop()
     boat.printStatus();
   }
 #elif defined(ROLE_MC)
+  // Обрабатываем входящие LoRa-пакеты и внутренние таймеры MissionControl
   missionControl.loop();
-  if (Serial.available())
+
+  // Если в Serial пришла команда — читаем и отправляем лодке
+  if (Serial.available() > 0)
   {
     String cmd = Serial.readStringUntil('\n');
-    Serial.println("Sending command to Boat: " + cmd);
-    missionControl.sendCommandString(cmd);
+    cmd.trim(); // убираем возможные пробелы/CR
+    if (cmd == "SCAN")
+    {
+      missionControl.addLog(F("⚡️ Remote scan requested"));
+      missionControl.scanSpectrumCSV(); // или с другими параметрами
+    }
+    else if (cmd.length() > 0)
+    {
+      Serial.println("Sending command to Boat: " + cmd);
+      missionControl.sendCommandString(cmd);
+    }
   }
 #endif
 }
