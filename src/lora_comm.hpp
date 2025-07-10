@@ -83,7 +83,7 @@ public:
         _manual = true;
         switchTo(m);
     }
-    void clearManualMode() { _manual = false; } // 
+    void clearManualMode() { _manual = false; } //
     bool isManualMode() const { return _manual; }
 
     RadioMode mode() const { return _mode; } // Конструктор: принимает ID устройства и указатель на объект логирования
@@ -104,6 +104,10 @@ public:
     // Инициализация LoRa модуля
     bool begin()
     {
+        _loraLong.sf = LORA_SF;
+        _loraLong.cr = LORA_CODING_RATE;
+        _loraLong.bw = LORA_BANDWIDTH;
+
         if (_log)
         {
             _log->addLog("LoRaComm: Инициализация SPI для LoRa...");
@@ -124,13 +128,16 @@ public:
         {
             _log->addLog("LoRaComm: BUSY state before init: " + String(digitalRead(LORA_BUSY)));
         }
-
-        bool ok = switchTo(RadioMode::LORA);
-        if (!ok)
-            return false;
+        applyLoRa(_loraLong); // Применяем настройки LoRa
+        // bool ok = switchTo(RadioMode::LORA);
+        // if (!ok)
+        //     return false;
         radio.setDio1Action(LoRaComm::onReceive);
         radio.startReceive();
-
+        if (_log)
+        {
+            _log->addLog("LoRaComm: LoRaComm инициализирован успешно.");
+        }
         return true;
     }
 

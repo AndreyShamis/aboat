@@ -105,7 +105,7 @@ namespace LoRaCore
                 radio.transmit((uint8_t *)&pkt, len);
                 unsigned long txDuration = millis() - t0;
                 radio.startReceive();
-                String msg = "FREQ/BW: " + String(loRa->currentFreq) + "/" +
+                String msg = "[LEN "+String(len)+"]TX:FREQ/BW: " + String(loRa->currentFreq) + "/" +
                              String(loRa->currentBW) + "/SF" + String(loRa->currentSF) + "/CR" +
                              String(loRa->currentCR) + "→TX=" + String(txDuration) + " ms " +
                              LoRaPacketToStr(pkt);
