@@ -45,6 +45,7 @@ enum CommandType : uint8_t
 {
     CMD_NONE = 0, // нет команды
     CMD_COMMAND_STRING = 'C',     // C = Command строка
+    CMD_COMMAND_RESPONSE = 'Y',   // Y = Command response (ответ на команду)
     CMD_TELEMETRY_FRAGMENT = 'T', // T = Telemetry фрагмент JSON
     CMD_INFO_ENGINE = 'I', // I = InfoEngine
     CMD_STATUS = 'S',      // S = Status
@@ -157,3 +158,27 @@ enum CommandType : uint8_t
 #else
   #error "❌ Unknown hardware target! Define HW_HELTEC or HW_WROOM."
 #endif
+
+// Enhanced safety and monitoring settings
+#define SAFETY_TEMP_CRITICAL     85.0f  // °C - Critical temperature for emergency shutdown
+#define SAFETY_TEMP_WARNING      75.0f  // °C - Warning temperature
+#define SAFETY_VOLTAGE_LOW       11.0f  // V - Low voltage warning
+#define SAFETY_VOLTAGE_CRITICAL  10.5f  // V - Critical voltage for shutdown
+#define SAFETY_COMM_TIMEOUT      60000  // ms - Communication timeout
+#define SAFETY_KEEP_CYCLE_WARN   50     // ms - Warning threshold for long keep() cycles
+
+// Performance monitoring settings
+#define PERFORMANCE_CACHE_TIME   100    // ms - Sensor cache validity time
+#define PERFORMANCE_LOG_INTERVAL 300000 // ms - Performance stats logging interval
+
+// Navigation settings
+#define NAV_DEFAULT_CRUISE_SPEED 0.5f   // m/s - Default cruise speed
+#define NAV_DEFAULT_MAX_SPEED    1.0f   // m/s - Maximum speed
+#define NAV_WAYPOINT_TOLERANCE   10.0f  // m - Default waypoint reach tolerance
+#define NAV_APPROACH_DISTANCE    50.0f  // m - Distance to start slowing down
+
+// Enhanced LoRa settings
+#define LORA_ADAPTIVE_INTERVAL   25011  // ms - Adaptive switching interval
+#define LORA_ASA_TIMEOUT         15000  // ms - ASA acknowledgment timeout
+#define LORA_PING_INTERVAL       20000  // ms - Ping interval
+#define LORA_RSSI_REPORT_INTERVAL 35000 // ms - RSSI report interval

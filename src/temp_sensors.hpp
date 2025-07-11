@@ -81,7 +81,7 @@ public:
     }
   }
 
-  float get(SensorRole role)
+  float get(SensorRole role) const
   {
     if (role < SENSOR_ROLE_COUNT)
     {
@@ -89,7 +89,7 @@ public:
     }
     return -127.0f;
   }
-  float getByAddressString(const String &addrStr)
+  float getByAddressString(const String &addrStr) const
   {
     if (addrStr.length() != 16)
       return -127.0f;
@@ -103,7 +103,7 @@ public:
     return sensors->getTempC(addr);
   }
 
-  std::vector<String> getAllAddresses()
+  std::vector<String> getAllAddresses() const
   {
     std::vector<String> result;
     for (int i = 0; i < sensorCount && i < MAX_SENSORS; i++)
@@ -115,6 +115,13 @@ public:
     }
     return result;
   }
+
+  // Getter for sensor count
+  int getSensorCount() const
+  {
+    return sensorCount;
+  }
+
 private:
   OneWire *oneWire = nullptr;
   DallasTemperature *sensors = nullptr;

@@ -201,6 +201,280 @@ public:
         // если нужно перезапустить приём → LoRaCore::resumeRX();
     }
 
+    // ============================================================
+    // COMMAND METHODS - Add all command methods here in public section
+    // ============================================================
+    
+    // Send diagnostic command (D) to boat
+    void sendDiagnosticCommand(const String &param = "")
+    {
+        String cmdStr = "D";
+        if (param.length() > 0) {
+            cmdStr += ":" + param;
+        }
+        sendCommandString(cmdStr);
+        addLog("[MC] 🔧 Sent diagnostic command: " + cmdStr);
+    }
+
+    // Send LoRa command (L) to boat
+    void sendLoRaCommand(const String &param = "")
+    {
+        String cmdStr = "L";
+        if (param.length() > 0) {
+            cmdStr += ":" + param;
+        }
+        sendCommandString(cmdStr);
+        addLog("[MC] 📡 Sent LoRa command: " + cmdStr);
+    }
+
+    // Send navigation command (N) to boat
+    void sendNavigationCommand(const String &param = "")
+    {
+        String cmdStr = "N";
+        if (param.length() > 0) {
+            cmdStr += ":" + param;
+        }
+        sendCommandString(cmdStr);
+        addLog("[MC] 🧭 Sent navigation command: " + cmdStr);
+    }
+
+    // Send web interface command (W) to boat
+    void sendWebCommand(const String &param = "")
+    {
+        String cmdStr = "W";
+        if (param.length() > 0) {
+            cmdStr += ":" + param;
+        }
+        sendCommandString(cmdStr);
+        addLog("[MC] 🌐 Sent web command: " + cmdStr);
+    }
+
+    // Convenience methods for specific navigation operations
+    void startNavigation(float targetLat, float targetLon)
+    {
+        String param = "start:" + String(targetLat, 6) + "," + String(targetLon, 6);
+        sendNavigationCommand(param);
+    }
+
+    void stopNavigation()
+    {
+        sendNavigationCommand("stop");
+    }
+
+    void pauseNavigation()
+    {
+        sendNavigationCommand("pause");
+    }
+
+    void resumeNavigation()
+    {
+        sendNavigationCommand("resume");
+    }
+
+    void setNavigationMode(const String &mode)
+    {
+        sendNavigationCommand("mode:" + mode);
+    }
+
+    // Convenience methods for LoRa operations
+    void requestLoRaStatus()
+    {
+        sendLoRaCommand("status");
+    }
+
+    void setLoRaProfile(uint8_t profileIndex)
+    {
+        sendLoRaCommand("profile:" + String(profileIndex));
+    }
+
+    void adaptLoRa()
+    {
+        sendLoRaCommand("adapt");
+    }
+
+    // Convenience methods for diagnostic operations
+    void requestFullDiagnostics()
+    {
+        sendDiagnosticCommand("full");
+    }
+
+    void requestSensorStatus()
+    {
+        sendDiagnosticCommand("sensors");
+    }
+
+    void requestPerformanceMetrics()
+    {
+        sendDiagnosticCommand("performance");
+    }
+
+    void requestSafetyStatus()
+    {
+        sendDiagnosticCommand("safety");
+    }
+
+    // Convenience methods for web interface operations
+    void requestWebStatus()
+    {
+        sendWebCommand("status");
+    }
+
+    void updateWebInterface()
+    {
+        sendWebCommand("update");
+    }
+
+    // Legacy command methods for convenience
+    void sendEngineCommand(int power)
+    {
+        String cmdStr = "M:" + String(power);
+        sendCommandString(cmdStr);
+        addLog("[MC] ⚙️ Sent engine command: " + cmdStr);
+    }
+
+    void emergencyStop()
+    {
+        sendCommandString("E");
+        addLog("[MC] 🛑 Emergency stop sent!");
+    }
+
+    void requestTelemetry()
+    {
+        sendCommandString("R");
+        addLog("[MC] 📊 Telemetry request sent");
+    }
+
+    void sendPingCommand()
+    {
+        sendCommandString("P");
+        addLog("[MC] 🏓 Ping sent");
+    }
+
+    // Help system - display available commands
+    void printHelp()
+    {
+        Serial.println("\n╔══════════════════════════════════════════════════════════════════╗");
+        Serial.println("║                     MISSION CONTROL COMMANDS                      ║");
+        Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+        Serial.println("║ 🔧 Diagnostic Commands (D:)                                     ║");
+        Serial.println("║   D:S    - Safety status                                        ║");
+        Serial.println("║   D:P    - Performance metrics                                  ║");
+        Serial.println("║   D:T    - Temperature readings                                 ║");
+        Serial.println("║   D:R    - Reset performance metrics                           ║");
+        Serial.println("║   D:full - Full diagnostic report                              ║");
+        Serial.println("║   D:ext  - Extended diagnostic report (longer)                 ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ 📡 LoRa Commands (L:)                                          ║");
+        Serial.println("║   L:S       - LoRa status                                       ║");
+        Serial.println("║   L:P[0-8]  - Set LoRa profile (0=robust, 8=fast)              ║");
+        Serial.println("║   L:adapt   - Trigger adaptive LoRa                            ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ 🧭 Navigation Commands (N:)                                    ║");
+        Serial.println("║   N:M       - Manual mode                                       ║");
+        Serial.println("║   N:R       - Return to home                                    ║");
+        Serial.println("║   N:S       - Station keeping                                   ║");
+        Serial.println("║   N:H       - Set current position as home                      ║");
+        Serial.println("║   N:stop    - Stop navigation                                   ║");
+        Serial.println("║   N:pause   - Pause navigation                                  ║");
+        Serial.println("║   N:resume  - Resume navigation                                 ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ 🌐 Waypoint Commands (W:)                                      ║");
+        Serial.println("║   W:A55.123,37.456  - Add waypoint                             ║");
+        Serial.println("║   W:S               - Start waypoint following                 ║");
+        Serial.println("║   W:C               - Clear waypoints                          ║");
+        Serial.println("║   W:status          - Web interface status                     ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ ⚙️ Legacy Commands:                                            ║");
+        Serial.println("║   M:120     - Set motor power                                   ║");
+        Serial.println("║   E         - Emergency stop                                    ║");
+        Serial.println("║   R         - Request telemetry                                ║");
+        Serial.println("║   P         - Send ping                                        ║");
+        Serial.println("║   SCAN      - Spectrum scan (CSV output)                       ║");
+        Serial.println("║   demo      - Run demo commands sequence                       ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ 💡 Convenience methods (call directly in code):                ║");
+        Serial.println("║   mc.printHelp()                  - Show this help              ║");
+        Serial.println("║   mc.startNavigation(lat, lon)    - Start navigation          ║");
+        Serial.println("║   mc.setLoRaProfile(profileIndex) - Set LoRa profile          ║");
+        Serial.println("║   mc.requestSensorStatus()        - Request sensor status     ║");
+        Serial.println("║   mc.setNavigationMode(\"manual\")  - Set navigation mode       ║");
+        Serial.println("╚══════════════════════════════════════════════════════════════════╝");
+        Serial.println();
+    }
+
+    // Process commands from Serial Monitor
+    void processSerialCommand(const String& cmd) 
+    {
+        if (cmd.length() == 0) return;
+        
+        addLog("[MC] 🚀 Processing command: " + cmd);
+        
+        if (cmd.startsWith("D:")) {
+            String param = cmd.substring(2);
+            sendDiagnosticCommand(param);
+        }
+        else if (cmd.startsWith("L:")) {
+            String param = cmd.substring(2);
+            sendLoRaCommand(param);
+        }
+        else if (cmd.startsWith("N:")) {
+            String param = cmd.substring(2);
+            sendNavigationCommand(param);
+        }
+        else if (cmd.startsWith("W:")) {
+            String param = cmd.substring(2);
+            sendWebCommand(param);
+        }
+        else if (cmd.startsWith("M:")) {
+            // Legacy motor command
+            int power = cmd.substring(2).toInt();
+            sendEngineCommand(power);
+        }
+        else if (cmd == "E") {
+            emergencyStop();
+        }
+        else if (cmd == "R") {
+            requestTelemetry();
+        }
+        else if (cmd == "P") {
+            sendPingCommand();
+        }
+        else if (cmd == "help" || cmd == "HELP" || cmd == "h" || cmd == "H") {
+            printHelp();
+        }
+        else if (cmd == "demo") {
+            // Quick demo commands
+            addLog("[MC] 📋 Running demo commands...");
+            requestFullDiagnostics();
+            delay(500);
+            requestLoRaStatus();
+            delay(500);
+            sendNavigationCommand("status");
+            delay(500);
+            sendPingCommand();
+            addLog("[MC] ✅ Demo complete");
+        }
+        else if (cmd == "SCAN") {
+            // Spectrum scanning command
+            addLog("[MC] ⚡️ Remote scan requested");
+            scanSpectrumCSV();
+        }
+        else {
+            addLog("[MC] ❌ Unknown command: '" + cmd + "'");
+            addLog("[MC] 💡 Type 'HELP' or 'help' for available commands.");
+        }
+    }
+
+    // Check and process Serial input (call this in your main loop)
+    void handleSerialInput()
+    {
+        if (Serial.available()) {
+            String input = Serial.readStringUntil('\n');
+            input.trim();
+            processSerialCommand(input);
+        }
+    }
+
 private:
     LoRaComm *loraComm;
     uint8_t nextPacketId = 0;
@@ -247,6 +521,61 @@ private:
             // TODO: deserializeJson(buffer) and handle data…
         }
     }
+    // Assemble command response fragments
+    void processCommandResponseFragment(const String &response)
+    {
+        // Check if this is a fragmented response
+        if (response.startsWith("[") && response.indexOf("/") > 0 && response.indexOf("]") > 0) {
+            // Format: "[i/N]...data..."
+            int slashPos = response.indexOf('/');
+            int closePos = response.indexOf(']');
+            int idx = response.substring(1, slashPos).toInt();
+            int total = response.substring(slashPos + 1, closePos).toInt();
+            String chunk = response.substring(closePos + 1);
+
+            static String responseBuffer;
+            static int expectedResponseFragments = 0;
+
+            if (idx == 0) {
+                responseBuffer.clear();
+                expectedResponseFragments = total;
+                addLog("[MC] 📦 Starting to receive " + String(total) + " command response fragments");
+            }
+            
+            responseBuffer += chunk;
+            
+            addLog("[MC] 📥 Fragment " + String(idx + 1) + "/" + String(total) + " received (" + String(chunk.length()) + " bytes)");
+
+            if (idx == expectedResponseFragments - 1) {
+                addLog("[MC] ✅ Complete command response received (" + String(responseBuffer.length()) + " bytes total)");
+                processCompleteCommandResponse(responseBuffer);
+                responseBuffer.clear();
+                expectedResponseFragments = 0;
+            }
+        } else {
+            // Single fragment response
+            processCompleteCommandResponse(response);
+        }
+    }
+    
+    // Process complete command response (assembled from fragments or single message)
+    void processCompleteCommandResponse(const String &response)
+    {
+        addLog("[MC] 📥 Command response: " + response);
+        
+        // Parse response to determine command type and result
+        if (response.startsWith("D:")) {
+            addLog("[MC] 🔧 Diagnostic response: " + response.substring(2));
+        } else if (response.startsWith("L:")) {
+            addLog("[MC] 📡 LoRa response: " + response.substring(2));
+        } else if (response.startsWith("N:")) {
+            addLog("[MC] 🧭 Navigation response: " + response.substring(2));
+        } else if (response.startsWith("W:")) {
+            addLog("[MC] 🌐 Web response: " + response.substring(2));
+        } else {
+            addLog("[MC] ❓ Unknown response format: " + response);
+        }
+    }
     // Handle incoming PacketBase + payloadBuf
     void handlePacket(uint8_t sender,
                       const PacketBase &hdr,
@@ -290,18 +619,15 @@ private:
             // Ответим только на CMD_REQUEST_ASA
             if (hdr.packetType == CMD_REQUEST_ASA)
             {
-                sendAsaResponse(nextPacketId++, profileIndex, sender);
-                vTaskDelay(pdMS_TO_TICKS(500));
-                vTaskDelay(pdMS_TO_TICKS(500));
-                vTaskDelay(pdMS_TO_TICKS(500));
-                vTaskDelay(pdMS_TO_TICKS(300));
                 addLog("3 [MC] ASA Response sent");
+                sendAsaResponse(nextPacketId++, profileIndex, sender);
+                vTaskDelay(pdMS_TO_TICKS(50)); 
             }
             else
             {
                 addLog("4 [MC] ASA Response received, applying profile index " + String(profileIndex));
             }
-            vTaskDelay(pdMS_TO_TICKS(100)); // Ждем, чтобы пакет ушел
+            vTaskDelay(pdMS_TO_TICKS(200)); // Ждем, чтобы пакет ушел
             applyProfile(profileIndex);
             break;
         }
@@ -327,7 +653,7 @@ private:
 
             memcpy(reinterpret_cast<uint8_t *>(&rpt) + sizeof(PacketBase), buf, hdr.payloadLen);
 
-            addLog("📥 RSSI Report: raw=" + String(rpt.rawRssi) + ", smoothed=" + String(rpt.smoothedRssi));
+            addLog("📥RSSI:raw=" + String(rpt.rawRssi)+" ,smoothed=" + String(rpt.smoothedRssi));
             break;
         }
             // case CMD_REQUEST_ASA:
@@ -372,6 +698,30 @@ private:
             //     applyProfile(profileIndex);
             //     break;
             // }
+
+        case CMD_COMMAND_RESPONSE:
+        {
+            // Response to our D, L, N, W commands
+            String response(reinterpret_cast<const char *>(buf), hdr.payloadLen);
+            processCommandResponseFragment(response);
+            break;
+        }
+
+        case CMD_STATUS:
+        {
+            // Enhanced status information from boat
+            String status(reinterpret_cast<const char *>(buf), hdr.payloadLen);
+            addLog("[MC] 📊 Enhanced status: " + status);
+            break;
+        }
+
+        case CMD_INFO_ENGINE:
+        {
+            // Engine information response
+            String engineInfo(reinterpret_cast<const char *>(buf), hdr.payloadLen);
+            addLog("[MC] ⚙️ Engine info: " + engineInfo);
+            break;
+        }
 
         default:
             // Unhandled packet types …

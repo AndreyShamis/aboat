@@ -1,4 +1,4 @@
-                                                                                                                            <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8">
@@ -45,6 +45,77 @@
     <h2>Температура (Live)</h2>
     <div>Левый мотор: <span id="tempLeft">--</span> °C</div>
     <div>Правый мотор: <span id="tempRight">--</span> °C</div>
+  </div>
+
+  <div class="section">
+    <h2>Система безопасности</h2>
+    <div>Статус системы: <span id="safetyStatus">--</span></div>
+    <div>Критическая температура: <span id="criticalTemp">--</span></div>
+    <div>Низкое напряжение: <span id="lowVoltage">--</span></div>
+    <div>Потеря связи: <span id="commLoss">--</span></div>
+  </div>
+
+  <div class="section">
+    <h2>Производительность</h2>
+    <div>Среднее время цикла: <span id="avgKeepTime">--</span> мс</div>
+    <div>Максимальное время цикла: <span id="maxKeepTime">--</span> мс</div>
+    <div>Количество циклов: <span id="cycleCount">--</span></div>
+    <button onclick="resetPerformanceMetrics()">Сбросить метрики</button>
+  </div>
+
+  <div class="section">
+    <h2>LoRa статистика</h2>
+    <div>Текущий профиль: <span id="loraProfile">--</span></div>
+    <div>RSSI (сглаженный): <span id="smoothedRssi">--</span> dBm</div>
+    <div>SNR: <span id="snr">--</span> dB</div>
+    <div>ASA активен: <span id="asaActive">--</span></div>
+    <div>
+      <label for="manualProfile">Ручная установка профиля:</label>
+      <select id="manualProfile">
+        <option value="">Автоматически</option>
+        <option value="0">0 - Максимальная надёжность</option>
+        <option value="1">1 - Очень хорошая устойчивость</option>
+        <option value="2">2 - Надёжный компромисс</option>
+        <option value="3">3 - Средний режим</option>
+        <option value="4">4 - Средний, открытая местность</option>
+        <option value="5">5 - Быстро, при хорошем сигнале</option>
+        <option value="6">6 - Скорость + дальность</option>
+        <option value="7">7 - Очень быстрый</option>
+        <option value="8">8 - Максимальная скорость</option>
+      </select>
+      <button onclick="setLoRaProfile()">Установить</button>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Навигация</h2>
+    <div>Режим навигации: <span id="navMode">MANUAL</span></div>
+    <div>
+      <button onclick="setNavMode('MANUAL')">Ручное управление</button>
+      <button onclick="setNavMode('RTH')">Возврат домой</button>
+      <button onclick="setNavMode('STATION')">Удержание позиции</button>
+    </div>
+    <div>
+      <label for="waypointLat">Широта точки:</label>
+      <input type="number" id="waypointLat" step="0.000001" placeholder="55.123456">
+    </div>
+    <div>
+      <label for="waypointLon">Долгота точки:</label>
+      <input type="number" id="waypointLon" step="0.000001" placeholder="37.123456">
+    </div>
+    <button onclick="addWaypoint()">Добавить точку маршрута</button>
+    <button onclick="startWaypointNavigation()">Начать навигацию по точкам</button>
+    <button onclick="clearWaypoints()">Очистить маршрут</button>
+  </div>
+
+  <div class="section">
+    <h2>Диагностика</h2>
+    <button onclick="runDiagnostics('S')">Проверить безопасность</button>
+    <button onclick="runDiagnostics('P')">Показать производительность</button>
+    <button onclick="runDiagnostics('T')">Показать температуры</button>
+    <div id="diagnosticsOutput" style="margin-top: 10px; padding: 10px; background: #f9f9f9; min-height: 50px;">
+      Результаты диагностики появятся здесь...
+    </div>
   </div>
 
   <script>
@@ -114,10 +185,160 @@ async function loadConfig() {
     }
 
     async function updateTemps() {
-        const res = await fetch('/api/temps');
-        const temps = await res.json();
-        document.getElementById('tempLeft').textContent = temps.left;
-        document.getElementById('tempRight').textContent = temps.right;
+        try {
+            const [temps, status] = await Promise.all([
+                fetch('/api/temps').then(r => r.json()),
+                fetch('/status').then(r => r.json())
+            ]);
+            
+            document.getElementById('tempLeft').textContent = temps.left.toFixed(1);
+            document.getElementById('tempRight').textContent = temps.right.toFixed(1);
+            
+            // Update safety status
+            if (status.safety) {
+                document.getElementById('safetyStatus').textContent = status.safety.healthy ? 'ЗДОРОВ' : 'ПРЕДУПРЕЖДЕНИЕ';
+                document.getElementById('criticalTemp').textContent = status.safety.overtemp ? 'ДА' : 'НЕТ';
+                document.getElementById('lowVoltage').textContent = status.safety.low_voltage ? 'ДА' : 'НЕТ';
+                document.getElementById('commLoss').textContent = status.safety.comm_loss ? 'ДА' : 'НЕТ';
+            }
+            
+            // Update performance metrics
+            if (status.performance) {
+                document.getElementById('avgKeepTime').textContent = status.performance.avg_keep_time.toFixed(2);
+                document.getElementById('maxKeepTime').textContent = status.performance.max_keep_time;
+                document.getElementById('cycleCount').textContent = status.performance.cycle_count;
+            }
+            
+            // Update LoRa statistics
+            if (status.lora) {
+                document.getElementById('loraProfile').textContent = status.lora.profile_index;
+                document.getElementById('smoothedRssi').textContent = status.lora.smoothed_rssi.toFixed(1);
+                document.getElementById('snr').textContent = status.lora.snr ? status.lora.snr.toFixed(1) : '--';
+                document.getElementById('asaActive').textContent = status.lora.asa_active ? 'ДА' : 'НЕТ';
+            }
+        } catch (error) {
+            console.error('Error updating data:', error);
+        }
+    }
+
+    async function resetPerformanceMetrics() {
+        try {
+            await fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'command=DR'
+            });
+            alert('Метрики производительности сброшены');
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+
+    async function setLoRaProfile() {
+        const profile = document.getElementById('manualProfile').value;
+        if (profile === '') return;
+        
+        try {
+            await fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `command=LP${profile}`
+            });
+            alert(`LoRa профиль установлен на ${profile}`);
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+
+    async function runDiagnostics(type) {
+        try {
+            const response = await fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `command=D${type}`
+            });
+            
+            document.getElementById('diagnosticsOutput').textContent = 
+                `Диагностика ${type} выполнена. Проверьте лог-файлы для подробностей.`;
+        } catch (error) {
+            document.getElementById('diagnosticsOutput').textContent = 'Ошибка: ' + error.message;
+        }
+    }
+
+    async function setNavMode(mode) {
+        try {
+            let command;
+            switch(mode) {
+                case 'MANUAL': command = 'NM'; break;
+                case 'RTH': command = 'NR'; break;
+                case 'STATION': command = 'NS'; break;
+                default: return;
+            }
+            
+            await fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `command=${command}`
+            });
+            
+            document.getElementById('navMode').textContent = mode;
+            alert(`Режим навигации изменен на ${mode}`);
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+
+    async function addWaypoint() {
+        const lat = document.getElementById('waypointLat').value;
+        const lon = document.getElementById('waypointLon').value;
+        
+        if (!lat || !lon) {
+            alert('Введите координаты точки');
+            return;
+        }
+        
+        try {
+            await fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: `command=WA${lat},${lon}`
+            });
+            
+            alert('Точка маршрута добавлена');
+            document.getElementById('waypointLat').value = '';
+            document.getElementById('waypointLon').value = '';
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+
+    async function startWaypointNavigation() {
+        try {
+            await fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'command=WS'
+            });
+            
+            document.getElementById('navMode').textContent = 'WAYPOINT_FOLLOWING';
+            alert('Навигация по точкам маршрута начата');
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
+    }
+
+    async function clearWaypoints() {
+        try {
+            await fetch('/cmd', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'command=WC'
+            });
+            
+            alert('Маршрут очищен');
+        } catch (error) {
+            alert('Ошибка: ' + error.message);
+        }
     }
 
     async function reboot() {

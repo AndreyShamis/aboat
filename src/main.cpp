@@ -54,7 +54,17 @@ void setup()
 
 #elif defined(ROLE_MC)
   missionControl.begin();
-  Serial.println("Mission Control System Starting...\n\n");
+  Serial.println("Mission Control System Starting...\n");
+  
+  Serial.println("=== MISSION CONTROL READY ===");
+  Serial.println("Available commands:");
+  Serial.println("  D:S, D:P, D:T, D:full, D:ext - Diagnostics");
+  Serial.println("  L:S, L:P[0-8], L:adapt       - LoRa control");
+  Serial.println("  N:M, N:R, N:S, N:H           - Navigation");
+  Serial.println("  W:A<lat,lon>, W:S, W:C       - Waypoints");
+  Serial.println("  E, R, P, HELP, demo, SCAN    - Other commands");
+  Serial.println("Type 'HELP' for detailed reference");
+  Serial.println("================================\n");
 #endif
 
   ;
@@ -128,21 +138,7 @@ void loop()
   // Обрабатываем входящие LoRa-пакеты и внутренние таймеры MissionControl
   missionControl.loop();
 
-  // Если в Serial пришла команда — читаем и отправляем лодке
-  if (Serial.available() > 0)
-  {
-    String cmd = Serial.readStringUntil('\n');
-    cmd.trim(); // убираем возможные пробелы/CR
-    if (cmd == "SCAN")
-    {
-      missionControl.addLog(F("⚡️ Remote scan requested"));
-      missionControl.scanSpectrumCSV(); // или с другими параметрами
-    }
-    else if (cmd.length() > 0)
-    {
-      Serial.println("Sending command to Boat: " + cmd);
-      missionControl.sendCommandString(cmd);
-    }
-  }
+  // Обрабатываем команды из Serial Monitor (включая SCAN)
+  missionControl.handleSerialInput();
 #endif
 }
