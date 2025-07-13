@@ -35,6 +35,7 @@ namespace LoRaCore
     QueueHandle_t incomingQueue = nullptr;
     QueueHandle_t outgoingQueue = nullptr;
     static LoRaComm *loRa = nullptr;
+    static SemaphoreHandle_t radioSemaphore = nullptr;
 
     void handleAck(const LoRaPacket &pkt)
     {
@@ -64,61 +65,59 @@ namespace LoRaCore
         // Stack optimization: allocate once, reuse
         static LoRaPacket pkt;
         static char logBuffer[200]; // Увеличен для детального логирования
-        
+        static String fullLog = "";
         while (true)
         {
+            
             if (LoRaComm::packetReceivedFlag)
             {
+                // Захватываем семафор для радио
+                fullLog = "";
+                if (radioSemaphore) xSemaphoreTake(radioSemaphore, portMAX_DELAY);
                 LoRaComm::packetReceivedFlag = false;
                 unsigned long t0 = millis();
-                
                 int len = radio.getPacketLength();
                 if (len > 0 && len <= sizeof(LoRaPacket))
                 {
-                    // Clear packet structure
                     memset(&pkt, 0, sizeof(pkt));
-                    
                     radio.readData((uint8_t *)&pkt, len);
                     unsigned long t1 = millis();
-                    
                     radio.startReceive();
-                    
                     if (pkt.senderId == MY_DEVICE_ID)
                     {
+                        if (radioSemaphore) xSemaphoreGive(radioSemaphore);
                         continue;
                     }
-                    
-                    // Подробное RX логирование с payload
                     String payloadHex = "";
-                    for (int i = 0; i < pkt.payloadLen && i < 16; i++) { // Ограничиваем 16 байтами для стека
+                    for (int i = 0; i < pkt.payloadLen && i < 16; i++) {
                         char hexByte[4];
                         snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
                         payloadHex += hexByte;
                     }
                     if (pkt.payloadLen > 16) payloadHex += "...";
-                    
                     snprintf(logBuffer, sizeof(logBuffer), 
                         "[LEN %d]RX %lums→[%u->%u], T=[%02X/%u], id=%u, plLen=%u",
                         len, t1 - t0, pkt.senderId, pkt.receiverId, 
                         pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
-                    
-                    String fullLog = String(logBuffer) + ", pl=" + payloadHex;
-                    LLog(fullLog);
-                    
-                    // Сначала проверяем, ACK ли это
+                    fullLog = String(logBuffer) + ", pl=" + payloadHex;
                     if (pkt.packetType == CMD_ACK)
                     {
                         handleAck(pkt);
                     }
                     else
                     {
-                        // Don't block if queue is full - drop packet to prevent stack overflow
                         xQueueSendToBack(incomingQueue, &pkt, 0);
                     }
                 }
                 else
                 {
                     radio.startReceive();
+                }
+                // Освобождаем семафор после обработки
+                if (radioSemaphore) xSemaphoreGive(radioSemaphore);
+                // Логируем после освобождения радио
+                if (fullLog.length() > 0) {
+                    LLog(fullLog);
                 }
             }
             vTaskDelay(pdMS_TO_TICKS(5));
@@ -137,31 +136,33 @@ namespace LoRaCore
         {
             if (xQueueReceive(outgoingQueue, &pkt, portMAX_DELAY) == pdTRUE)
             {
+                // Ждём освобождения радио
+                if (radioSemaphore) xSemaphoreTake(radioSemaphore, portMAX_DELAY);
                 radio.standby();
                 ssize_t len = offsetof(LoRaPacket, payload) + pkt.payloadLen;
-                
                 unsigned long t0 = millis();
                 radio.transmit((uint8_t *)&pkt, len);
                 unsigned long txDuration = millis() - t0;
                 radio.startReceive();
-                
-                // Подробное TX логирование с payload
+                // Освобождаем радио для приёма
+                if (radioSemaphore) xSemaphoreGive(radioSemaphore);
                 String payloadHex = "";
-                for (int i = 0; i < pkt.payloadLen && i < 16; i++) { // Ограничиваем 16 байтами для стека
+                for (int i = 0; i < pkt.payloadLen && i < 16; i++) {
                     char hexByte[4];
                     snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
                     payloadHex += hexByte;
                 }
                 if (pkt.payloadLen > 16) payloadHex += "...";
-                
                 snprintf(logBuffer, sizeof(logBuffer), 
                     "[LEN %d]TX %lums→[%u->%u], T=[%02X/%u], id=%u, plLen=%u",
                     (int)len, txDuration, pkt.senderId, pkt.receiverId,
                     pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
-                
                 String fullLog = String(logBuffer) + ", pl=" + payloadHex;
+                // Логируем после освобождения радио
+                if (radioSemaphore) xSemaphoreGive(radioSemaphore);
                 LLog(fullLog);
             }
+            vTaskDelay(pdMS_TO_TICKS(5)); 
         }
     }
 
@@ -206,7 +207,7 @@ namespace LoRaCore
                 }
             }
             // Longer delay to reduce CPU usage
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(250));
         }
     }
 
@@ -218,16 +219,17 @@ namespace LoRaCore
 
         incomingQueue = xQueueCreate(20, sizeof(LoRaPacket));
         outgoingQueue = xQueueCreate(30, sizeof(LoRaPacket));
-
+        radioSemaphore = xSemaphoreCreateBinary();
         assert(incomingQueue != nullptr);
         assert(outgoingQueue != nullptr);
-
+        assert(radioSemaphore != nullptr);
+        // Сразу освобождаем семафор, чтобы радио было доступно
+        xSemaphoreGive(radioSemaphore);
         // Увеличиваем размер стека для предотвращения stack canary errors
         // Оригинал: 4096 → Новый: 6144 (на 50% больше)
         BaseType_t res1 = xTaskCreatePinnedToCore(receiveTask, "LoRaRecv", 6144, nullptr, 3, nullptr, 1);
         BaseType_t res2 = xTaskCreatePinnedToCore(sendTask, "LoRaSend", 6144, nullptr, 2, nullptr, 1);
         BaseType_t res3 = xTaskCreatePinnedToCore(resendTask, "LoRaRetry", 4096, nullptr, 1, nullptr, 1); // Retry task - меньше нагрузки
-
         assert(res1 == pdPASS);
         assert(res2 == pdPASS);
         assert(res3 == pdPASS);
