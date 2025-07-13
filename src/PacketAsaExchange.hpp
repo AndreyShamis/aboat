@@ -31,21 +31,23 @@ struct PacketAsaExchange : public PacketBase {
 };
 
 // -----------------------------------------------------------------------------
-// Утилиты ASA: отправка через очередь (второе ядро)
+// Утилиты ASA: отправка через экземпляр LoRaCore
 // -----------------------------------------------------------------------------
 
-inline void sendAsaRequest(uint16_t packetId, uint8_t profileIndex, uint8_t receiver) {
+inline void sendAsaRequest(LoRaCore* loraCore, uint16_t packetId, uint8_t profileIndex, uint8_t receiver) {
+    if (!loraCore) return;
     PacketAsaExchange pkt(CMD_REQUEST_ASA);
     pkt.packetId = packetId;
     pkt.setProfile(profileIndex);
-    LoRaCore::sendPacketBase(receiver, pkt, &pkt.profileIndex, false);  // передаём payload
+    loraCore->sendPacketBase(receiver, pkt, (const uint8_t*)&pkt.profileIndex, false);  // передаём payload
 }
 
-inline void sendAsaResponse(uint16_t packetId, uint8_t profileIndex, uint8_t receiver) {
+inline void sendAsaResponse(LoRaCore* loraCore, uint16_t packetId, uint8_t profileIndex, uint8_t receiver) {
+    if (!loraCore) return;
     PacketAsaExchange pkt(CMD_REPOSNCE_ASA);
     pkt.packetId = packetId;
     pkt.setProfile(profileIndex);
-    LoRaCore::sendPacketBase(receiver, pkt, &pkt.profileIndex, false);
+    loraCore->sendPacketBase(receiver, pkt, (const uint8_t*)&pkt.profileIndex, false);
 }
 
 // Пример разбора входящего ASA пакета

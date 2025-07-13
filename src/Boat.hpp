@@ -23,13 +23,8 @@
 #include <time.h>
 #include "FS.h"
 #include "SPIFFS.h"
-#include "lora_comm.hpp"
-#include <Adafruit_PWMServoDriver.h>
-#include "freertos/queue.h"
-#include "freertos/semphr.h"  // Для мьютексов FreeRTOS
-#include "PacketClasses.hpp"
-
 #include "LoRaCore.hpp"
+#include <Adafruit_PWMServoDriver.h>
 #include "PacketAsaExchange.hpp"
 #include "boat_utils.hpp"
 #include "auto_navigation.hpp"
@@ -123,7 +118,7 @@ public:
     GNSSManager gnss;
     AutoNavigation autoNav;
     bool updateStarted = false;
-    LoRaComm *loraComm; // Новый объект для LoRa связи
+    LoRaCore *loraComm; // Unified LoRa communication object
     Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
 
     TaskHandle_t sendStatusTaskHandle = nullptr;
@@ -176,7 +171,7 @@ public:
 
     Boat() : sensor(0x48), gnss(Serial2)
     {
-        loraComm = new LoRaComm(BOAT_DEVICE_ID, this);
+        loraComm = new LoRaCore(BOAT_DEVICE_ID, this);
         // Создаем мьютекс для потокобезопасного логирования
         logMutex = xSemaphoreCreateMutex();
         if (logMutex == nullptr) {
@@ -553,10 +548,7 @@ public:
         }
         else
         {
-            // loraAdapt = new AdaptiveLoRaManager(loraComm, this);
-            // loraAdapt->begin();
-            addLog(" + LoRaComm успешно инициализирован.");
-            LoRaCore::init(loraComm, this); // запускает задачи на втором ядре
+            addLog(" + LoRaCore успешно инициализирован.");
         }
 
         addLog("Strarting setup iBUS FlySky...");
@@ -634,7 +626,7 @@ public:
         }
 
         LoRaPacket pkt;
-        if (LoRaCore::receive(pkt) && pkt.senderId != BOAT_DEVICE_ID)
+        if (loraComm->receive(pkt) && pkt.senderId != BOAT_DEVICE_ID)
         {
             uint8_t senderId = pkt.senderId;
             PacketBase hdr;
@@ -848,7 +840,7 @@ public:
                     info.packetType = CMD_INFO_ENGINE;
                     info.packetId = nextPacketId++;
                     info.payloadLen = 0;
-                    LoRaCore::sendPacketBase(senderId, info, nullptr);
+                    loraComm->sendPacketBase(senderId, info, nullptr);
                     break;
                 }
                 //  ——————————————————————————————————————————————————————————
@@ -861,7 +853,7 @@ public:
                     cfg.packetId = nextPacketId++;
                     cfg.payloadLen = 0; // или >0, если ты что-то пишешь в payload
 
-                    LoRaCore::sendPacketBase(senderId, cfg, nullptr);
+                    loraComm->sendPacketBase(senderId, cfg, nullptr);
                     break;
                 }
                 //  ——————————————————————————————————————————————————————————
@@ -873,7 +865,7 @@ public:
                     nav.packetType = CMD_NAV;
                     nav.packetId = nextPacketId++;
                     // заполняем nav… (координаты, курс, скорость)
-                    LoRaCore::sendPacketBase(senderId, nav, nullptr);
+                    loraComm->sendPacketBase(senderId, nav, nullptr);
                     break;
                 }
 
@@ -901,7 +893,7 @@ public:
                 uint8_t ackBuf[sizeof(ackOut.ackedId)];
                 memcpy(ackBuf, &ackOut.ackedId, sizeof(uint16_t));
 
-                LoRaCore::sendPacketBase(senderId, ackOut, ackBuf, false);
+                loraComm->sendPacketBase(senderId, ackOut, ackBuf, false);
             }
             // В конце — отправляем ACK обратно отправителю
 
@@ -928,7 +920,7 @@ public:
             ping.packetType = CMD_PING;
             ping.packetId = nextPacketId++;
             ping.payloadLen = 0;
-            LoRaCore::sendPacketBase(MISSION_CONTROL_ID, ping, nullptr, false);
+            loraComm->sendPacketBase(MISSION_CONTROL_ID, ping, nullptr, false);
             addLog("[PROF:" + String(currentProfileIndex) + "] 🔄 Ping → MC");
             lastPingSent = millis();
         }
@@ -1078,7 +1070,7 @@ public:
         pkt.rawRssi = loraComm->getRadio().getRSSI();
         pkt.smoothedRssi = smoothedRssi;
 
-        LoRaCore::sendPacketBase(receiverId, pkt, reinterpret_cast<const uint8_t *>(&pkt) + sizeof(PacketBase));
+        loraComm->sendPacketBase(receiverId, pkt, reinterpret_cast<const uint8_t *>(&pkt) + sizeof(PacketBase));
         addLog("📡 Sent RSSI Report → ID " + String(receiverId) +
                " raw=" + String(pkt.rawRssi) + " smoothed=" + String(pkt.smoothedRssi));
     }
@@ -1131,7 +1123,7 @@ public:
             addLog("[adaptiveLoraUpdate] rssi:" + String(PongRssi) + " snr:" + String(snr) +
                    " → Proposing " + direction + " to profile " + String(bestIndex));
 
-            sendAsaRequest(nextPacketId++, bestIndex, MISSION_CONTROL_ID);
+            sendAsaRequest(loraComm, nextPacketId++, bestIndex, MISSION_CONTROL_ID);
             waitingForASAAck = true;
             
             // For downgrades, apply immediately for safety
@@ -1248,7 +1240,7 @@ public:
             memcpy(tempBuf, payloadStr.c_str(), cmd.payloadLen);
             
             // Отправляем на MissionControl
-            LoRaCore::sendPacketBase(MISSION_CONTROL_ID, cmd, tempBuf);
+            loraComm->sendPacketBase(MISSION_CONTROL_ID, cmd, tempBuf);
             vTaskDelay(pdMS_TO_TICKS(20));
         }
 
@@ -1619,7 +1611,7 @@ public:
         responsePacket.payloadLen = len;
         
         // Send response to MissionControl
-        LoRaCore::sendPacketBase(MISSION_CONTROL_ID, responsePacket, tempBuf);
+        loraComm->sendPacketBase(MISSION_CONTROL_ID, responsePacket, tempBuf);
         
         // Безопасное логирование результата
         char logBuffer[128];
@@ -1738,7 +1730,7 @@ private:
         if (millis() - lastPacketCheck >= 10) { // 100Hz для LoRa
             // Use LoRaCore API instead of direct LoRaComm calls
             LoRaPacket pkt;
-            if (LoRaCore::receive(pkt) && pkt.senderId != BOAT_DEVICE_ID) {
+            if (loraComm->receive(pkt) && pkt.senderId != BOAT_DEVICE_ID) {
                 lastPacketReceived = millis();
                 // Process packet with optimized stack usage
                 handleLoRaPacketOptimized(pkt);
@@ -1972,7 +1964,7 @@ private:
                 info.packetType = CMD_INFO_ENGINE;
                 info.packetId = nextPacketId++;
                 info.payloadLen = 0;
-                LoRaCore::sendPacketBase(senderId, info, nullptr);
+                loraComm->sendPacketBase(senderId, info, nullptr);
                 break;
             }
             case CMD_CONFIG: {
@@ -1980,14 +1972,14 @@ private:
                 cfg.packetType = CMD_CONFIG;
                 cfg.packetId = nextPacketId++;
                 cfg.payloadLen = 0;
-                LoRaCore::sendPacketBase(senderId, cfg, nullptr);
+                loraComm->sendPacketBase(senderId, cfg, nullptr);
                 break;
             }
             case CMD_NAV: {
                 PacketNav nav{};
                 nav.packetType = CMD_NAV;
                 nav.packetId = nextPacketId++;
-                LoRaCore::sendPacketBase(senderId, nav, nullptr);
+                loraComm->sendPacketBase(senderId, nav, nullptr);
                 break;
             }
             default:
@@ -2007,6 +1999,6 @@ private:
         uint8_t ackBuf[sizeof(ackOut.ackedId)];
         memcpy(ackBuf, &ackOut.ackedId, sizeof(uint16_t));
 
-        LoRaCore::sendPacketBase(receiverId, ackOut, ackBuf, false);
+        loraComm->sendPacketBase(receiverId, ackOut, ackBuf, false);
     }
 };

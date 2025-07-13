@@ -4,9 +4,6 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include "settings.h"
-#include "lora_comm.hpp"
-#include "LogInterface.hpp"
-#include "PacketClasses.hpp" // calcCRC16, PacketBase, PacketCommand, etc.
 #include "LoRaCore.hpp"
 #include "wifi_manager.hpp"
 
@@ -25,7 +22,7 @@ public:
     unsigned long nextPongInterval = 15000; // первый интервал (мс)
     MissionControl()
     {
-        loraComm = new LoRaComm(MY_DEVICE_ID, this);
+        loraComm = new LoRaCore(MY_DEVICE_ID, this);
     }
 
     ~MissionControl()
@@ -41,11 +38,11 @@ public:
         Serial.println(F("[MC] Starting Mission Control..."));
         if (!loraComm->begin())
         {
-            addLog(F("[MC] ERROR: Failed to initialize LoRaComm"));
+            addLog(F("[MC] ERROR: Failed to initialize LoRaCore"));
         }
         else
         {
-            LoRaCore::init(loraComm); // запускает задачи на втором ядре
+            addLog(F("[MC] LoRaCore initialized successfully"));
             addLog(F("[MC] LoRaComm initialized"));
             // sendInfoRequest(CMD_TELEMETRY_FRAGMENT); // запросить телеметрию:
             // sendInfoRequest(CMD_INFO_ENGINE);        // запросить “InfoEngine”:
@@ -63,7 +60,7 @@ public:
 
         LoRaPacket pkt;
 
-        if (LoRaCore::receive(pkt))
+        if (loraComm->receive(pkt))
         {
             PacketBase hdr;
             hdr.packetType = pkt.packetType;
@@ -92,7 +89,7 @@ public:
             resp.packetId = nextPacketId++;
             resp.payloadLen = sizeof(uint8_t);
             resp.profileIndex = currentProfileIndex;
-            LoRaCore::sendPacketBase(BOAT_DEVICE_ID, resp, &resp.profileIndex, false);
+            loraComm->sendPacketBase(BOAT_DEVICE_ID, resp, (const uint8_t*)&resp.profileIndex, false);
             vTaskDelay(pdMS_TO_TICKS(500));
             applyProfile(currentProfileIndex);
 
@@ -128,7 +125,7 @@ public:
         cmd.payloadLen = len;
 
         // 👇 Передаём стабильный буфер
-        LoRaCore::sendPacketBase(BOAT_DEVICE_ID, cmd, tempBuf);
+        loraComm->sendPacketBase(BOAT_DEVICE_ID, cmd, tempBuf);
     }
     void sendHeartbeatPong()
     {
@@ -137,7 +134,7 @@ public:
         pong.packetId = nextPacketId++;
         pong.payloadLen = 0;
 
-        LoRaCore::sendPacketBase(BOAT_DEVICE_ID, pong, nullptr, false);
+        loraComm->sendPacketBase(BOAT_DEVICE_ID, pong, nullptr, false);
         addLog(F("[MC] 🔄 Heartbeat PONG sent"));
 
         // cформируем новый случайный интервал 10–20 с
@@ -476,7 +473,7 @@ public:
     }
 
 private:
-    LoRaComm *loraComm;
+    LoRaCore *loraComm;
     uint8_t nextPacketId = 0;
     unsigned long lastPingTime = 0;
     int currentProfileIndex = 0;
@@ -620,7 +617,7 @@ private:
             if (hdr.packetType == CMD_REQUEST_ASA)
             {
                 addLog("3 [MC] ASA Response sent");
-                sendAsaResponse(nextPacketId++, profileIndex, sender);
+                sendAsaResponse(loraComm, nextPacketId++, profileIndex, sender);
                 vTaskDelay(pdMS_TO_TICKS(50)); 
             }
             else
@@ -639,7 +636,7 @@ private:
             pong.packetId = nextPacketId++;
             pong.payloadLen = 0;
             // loraComm->sendPacket(pong, sender);
-            LoRaCore::sendPacketBase(sender, pong, nullptr, false);
+            loraComm->sendPacketBase(sender, pong, nullptr, false);
             addLog("Pong->BOAT");
             break;
         }
@@ -742,7 +739,7 @@ private:
             uint8_t ackBuf[sizeof(ackOut.ackedId)];
             memcpy(ackBuf, &ackOut.ackedId, sizeof(uint16_t));
 
-            LoRaCore::sendPacketBase(sender, ackOut, ackBuf, false);
+            loraComm->sendPacketBase(sender, ackOut, ackBuf, false);
             addLog("[MC] 📨 Sent ACK for packet ID " + String(hdr.packetId));
         }
     }
@@ -756,7 +753,7 @@ private:
         cmd.payloadLen = 1;
         // первый байт payload — нужный код
         uint8_t code = what;
-        LoRaCore::sendPacketBase(BOAT_DEVICE_ID, cmd, &code);
+        loraComm->sendPacketBase(BOAT_DEVICE_ID, cmd, (const uint8_t*)&code);
         addLog("[MC] Sent P(request info=" + String((char)what) + ") to boat");
     }
 };
