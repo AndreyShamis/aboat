@@ -77,6 +77,7 @@ private:
     
     // Retry mechanism
     std::vector<PendingSend> pending;
+    SemaphoreHandle_t pendingMutex = nullptr;  // Мьютекс для pending vector
     static const uint8_t MAX_RETRIES = 3;
     static const uint32_t RETRY_TIMEOUT_MS = 4500;
     
@@ -159,15 +160,19 @@ private:
         uint16_t ackedId;
         memcpy(&ackedId, pkt.payload, sizeof(ackedId));
 
-        auto it = std::find_if(pending.begin(), pending.end(), [ackedId](const PendingSend &p)
-                               { return p.pkt.packetId == ackedId; });
-        if (it != pending.end())
-        {
-            char logBuffer[100];
-            snprintf(logBuffer, sizeof(logBuffer), "✅ACK received: id=%u, from=%u, type=%02X", 
-                ackedId, pkt.senderId, pkt.packetType);
-            LLog(String(logBuffer));
-            pending.erase(it);
+        // Потокобезопасный доступ к pending
+        if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            auto it = std::find_if(pending.begin(), pending.end(), [ackedId](const PendingSend &p)
+                                   { return p.pkt.packetId == ackedId; });
+            if (it != pending.end())
+            {
+                char logBuffer[100];
+                snprintf(logBuffer, sizeof(logBuffer), "✅ACK received: id=%u, from=%u, type=%02X", 
+                    ackedId, pkt.senderId, pkt.packetType);
+                LLog(String(logBuffer));
+                pending.erase(it);
+            }
+            xSemaphoreGive(pendingMutex);
         }
     }
     
@@ -299,34 +304,39 @@ private:
         while (true)
         {
             uint32_t now = millis();
-            for (auto it = pending.begin(); it != pending.end();)
-            {
-                if (now - it->timestamp > RETRY_TIMEOUT_MS)
+            
+            // Потокобезопасный доступ к pending
+            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                for (auto it = pending.begin(); it != pending.end();)
                 {
-                    if (it->retries < MAX_RETRIES)
+                    if (now - it->timestamp > RETRY_TIMEOUT_MS)
                     {
-                        if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(10)) == pdTRUE) {
-                            it->timestamp = now;
-                            it->retries++;
-                            
-                            snprintf(logBuffer, sizeof(logBuffer), "🔄Retry: id=%u #%u, T=%02X, to=%u", 
-                                it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.receiverId);
-                            LLog(String(logBuffer));
+                        if (it->retries < MAX_RETRIES)
+                        {
+                            if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(10)) == pdTRUE) {
+                                it->timestamp = now;
+                                it->retries++;
+                                
+                                snprintf(logBuffer, sizeof(logBuffer), "🔄Retry: id=%u #%u, T=%02X, to=%u", 
+                                    it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.receiverId);
+                                LLog(String(logBuffer));
+                            }
+                            ++it;
                         }
-                        ++it;
+                        else
+                        {
+                            snprintf(logBuffer, sizeof(logBuffer), "❌Drop: id=%u, T=%02X, to=%u (max retries)", 
+                                it->pkt.packetId, it->pkt.packetType, it->pkt.receiverId);
+                            LLog(String(logBuffer));
+                            it = pending.erase(it);
+                        }
                     }
                     else
                     {
-                        snprintf(logBuffer, sizeof(logBuffer), "❌Drop: id=%u, T=%02X, to=%u (max retries)", 
-                            it->pkt.packetId, it->pkt.packetType, it->pkt.receiverId);
-                        LLog(String(logBuffer));
-                        it = pending.erase(it);
+                        ++it;
                     }
                 }
-                else
-                {
-                    ++it;
-                }
+                xSemaphoreGive(pendingMutex);
             }
             vTaskDelay(pdMS_TO_TICKS(250));
         }
@@ -354,6 +364,20 @@ public:
     
     ~LoRaCore()
     {
+        // Очистка FreeRTOS ресурсов
+        if (incomingQueue) {
+            vQueueDelete(incomingQueue);
+        }
+        if (outgoingQueue) {
+            vQueueDelete(outgoingQueue);
+        }
+        if (radioSemaphore) {
+            vSemaphoreDelete(radioSemaphore);
+        }
+        if (pendingMutex) {
+            vSemaphoreDelete(pendingMutex);
+        }
+        
         delete _module;
     }
     
@@ -399,8 +423,9 @@ public:
         incomingQueue = xQueueCreate(20, sizeof(LoRaPacket));
         outgoingQueue = xQueueCreate(30, sizeof(LoRaPacket));
         radioSemaphore = xSemaphoreCreateBinary();
+        pendingMutex = xSemaphoreCreateMutex();
         
-        if (!incomingQueue || !outgoingQueue || !radioSemaphore) {
+        if (!incomingQueue || !outgoingQueue || !radioSemaphore || !pendingMutex) {
             if (_log) LLog("LoRaCore: Failed to create FreeRTOS objects");
             return false;
         }
@@ -479,7 +504,11 @@ public:
         bool ok = xQueueSendToBack(outgoingQueue, &frame, 0) == pdTRUE;
         if (ok && waitForAck)
         {
-            pending.push_back({frame, millis(), 0});
+            // Потокобезопасное добавление в pending
+            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                pending.push_back({frame, millis(), 0});
+                xSemaphoreGive(pendingMutex);
+            }
         }
         return ok;
     }
@@ -496,6 +525,36 @@ public:
         if (!incomingQueue)
             return false;
         return xQueueReceive(incomingQueue, &pkt, 0) == pdTRUE;
+    }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // DIAGNOSTIC AND MAINTENANCE METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+    size_t getPendingCount() const 
+    {
+        if (!pendingMutex) return 0;
+        size_t count = 0;
+        if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            count = pending.size();
+            xSemaphoreGive(pendingMutex);
+        }
+        return count;
+    }
+    
+    void clearPending() 
+    {
+        if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            pending.clear();
+            xSemaphoreGive(pendingMutex);
+        }
+    }
+    
+    bool isHealthy() const 
+    {
+        return incomingQueue != nullptr && 
+               outgoingQueue != nullptr && 
+               radioSemaphore != nullptr && 
+               pendingMutex != nullptr;
     }
 };
 
