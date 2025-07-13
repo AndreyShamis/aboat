@@ -45,21 +45,37 @@ public:
     void autoRegisterTasks() {
         taskCount = 0;
         
-        // Регистрируем основные задачи вручную с известными параметрами
-        // Основная задача Arduino loop (IDLE task не всегда доступен)
-        registerKnownTask("arduino_task", 8192);
-        
+        // // Регистрируем основные задачи вручную с известными параметрами
+        // // Основная задача Arduino loop (IDLE task не всегда доступен)
+        // if (!registerKnownTask("arduino_task", 8192)) {
+        //     Serial.println("[StackMonitor] Задача arduino_task не найдена");
+        // }
         // LoRa задачи (если они созданы)
-        registerKnownTask("LoRaRecv", 6144);
-        registerKnownTask("LoRaSend", 6144);
-        registerKnownTask("LoRaRetry", 4096);
-        
+        if (!registerKnownTask("LoRaRecv", 6144)) {
+            Serial.println("[StackMonitor] Задача LoRaRecv не найдена");
+        }
+        if (!registerKnownTask("LoRaSend", 6144)) {
+            Serial.println("[StackMonitor] Задача LoRaSend не найдена");
+        }
+        if (!registerKnownTask("LoRaRetry", 4096)) {
+            Serial.println("[StackMonitor] Задача LoRaRetry не найдена");
+        }
         // Системные задачи ESP32 (используем большие значения для безопасности)
-        registerKnownTask("IDLE0", 1024);
-        registerKnownTask("IDLE1", 1024);
-        registerKnownTask("wifi", 16384);  // WiFi задача может быть очень большой
-        registerKnownTask("ipc0", 1024);
-        registerKnownTask("ipc1", 1024);
+        if (!registerKnownTask("IDLE0", 1024)) {
+            Serial.println("[StackMonitor] Задача IDLE0 не найдена");
+        }
+        if (!registerKnownTask("IDLE1", 1024)) {
+            Serial.println("[StackMonitor] Задача IDLE1 не найдена");
+        }
+        if (!registerKnownTask("wifi", 16384)) {
+            Serial.println("[StackMonitor] Задача wifi не найдена");
+        }
+        if (!registerKnownTask("ipc0", 1024)) {
+            Serial.println("[StackMonitor] Задача ipc0 не найдена");
+        }
+        if (!registerKnownTask("ipc1", 1024)) {
+            Serial.println("[StackMonitor] Задача ipc1 не найдена");
+        }
     }
     
 public:
@@ -136,11 +152,17 @@ public:
     bool hasCriticalStackUsage() {
         for (int i = 0; i < taskCount; i++) {
             if (!tasks[i].isValid) continue;
-            
+
             UBaseType_t currentFree = uxTaskGetStackHighWaterMark(tasks[i].handle);
-            UBaseType_t used = tasks[i].stackSize - currentFree;
-            float usagePercent = (float)used / tasks[i].stackSize * 100.0f;
-            
+            UBaseType_t stackSize = tasks[i].stackSize;
+            if (stackSize == 0) continue; // защита от деления на ноль
+
+            // Корректируем, если currentFree > stackSize
+            if (currentFree > stackSize) stackSize = currentFree;
+
+            UBaseType_t used = stackSize - currentFree;
+            float usagePercent = (float)used / stackSize * 100.0f;
+
             // Критично: >90% использования или <256 байт свободно
             if (usagePercent > 90.0f || currentFree < 256) {
                 return true;
@@ -204,29 +226,24 @@ public:
     
 private:
     // Вспомогательная функция для регистрации известных задач
-    void registerKnownTask(const String& name, UBaseType_t estimatedStackSize) {
-        if (taskCount >= MAX_TASKS) return;
-        
-        // Попытаемся найти задачу по имени (упрощённый поиск)
+    // Теперь возвращает bool: true если задача найдена и зарегистрирована, иначе false
+    bool registerKnownTask(const String& name, UBaseType_t estimatedStackSize) {
+        if (taskCount >= MAX_TASKS) return false;
         TaskHandle_t handle = xTaskGetHandle(name.c_str());
         if (handle != nullptr) {
-            // Проверим, что uxTaskGetStackHighWaterMark возвращает разумное значение
             UBaseType_t currentFree = uxTaskGetStackHighWaterMark(handle);
-            
-            // Если текущий свободный стек больше нашей оценки, 
-            // скорректируем размер стека
             UBaseType_t actualStackSize = estimatedStackSize;
             if (currentFree > estimatedStackSize) {
-                // Предполагаем, что использовано не менее 512 байт
                 actualStackSize = currentFree + 512;
             }
-            
             tasks[taskCount].handle = handle;
             tasks[taskCount].name = name;
             tasks[taskCount].stackSize = actualStackSize;
             tasks[taskCount].minFreeStack = actualStackSize;
             tasks[taskCount].isValid = true;
             taskCount++;
+            return true;
         }
+        return false;
     }
 };

@@ -4,7 +4,8 @@
 #include <vector>
 #include "PacketClasses.hpp"
 #include "lora_comm.hpp"
-#include "LogInterface.hpp" 
+#include "LogInterface.hpp"
+
 static LogInterface *logger = nullptr;
 
 inline void LLog(const String &s)
@@ -79,6 +80,7 @@ namespace LoRaCore
                     
                     radio.readData((uint8_t *)&pkt, len);
                     unsigned long t1 = millis();
+                    
                     radio.startReceive();
                     
                     if (pkt.senderId == MY_DEVICE_ID)

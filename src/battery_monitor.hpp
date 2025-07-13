@@ -23,7 +23,7 @@ public:
 
     void prepareForRead() {
         digitalWrite(ADC_CTRL_PIN, LOW);        // включаем питание
-        delay(10);                                // ждём стабилизацию
+        delay(2);                                // ждём стабилизацию
     }
 
     void readVoltage() {

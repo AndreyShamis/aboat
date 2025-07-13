@@ -953,7 +953,7 @@ public:
         
         // Синхронизация при первом валидном значении GPS времени
         static unsigned long lastSync = 0;
-        if (gnss.isTimeUpdated() && millis() - lastSync > 10000)
+        if (gnss.isTimeUpdated() && millis() - lastSync > 160000)
         {
             gnss.syncSystemTimeFromGPS();
             lastSync = millis();
@@ -1249,7 +1249,7 @@ public:
             
             // Отправляем на MissionControl
             LoRaCore::sendPacketBase(MISSION_CONTROL_ID, cmd, tempBuf);
-            delay(10); // небольшой интервал между фрагментами
+            vTaskDelay(pdMS_TO_TICKS(20));
         }
 
         statusTaskRunning = false;
@@ -1592,7 +1592,7 @@ public:
                 String payload = String(headerBuffer) + fragment;
                 
                 sendResponseFragment(payload, i, chunks);
-                delay(50); // Небольшая задержка между фрагментами для надёжности
+                vTaskDelay(pdMS_TO_TICKS(90));
             }
         }
     }

@@ -27,7 +27,7 @@ public:
         digitalWrite(GPS_PWR_PIN, HIGH);
         enabled = true;
         gnssSerial.begin(9600, SERIAL_8N1, GPS_RX, GPS_TX);
-        delay(100);
+        delay(20);
 
         if (!gnss.begin(gnssSerial)) {
             Serial.println("GNSS not detected. Check wiring.");

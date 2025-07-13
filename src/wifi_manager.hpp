@@ -97,7 +97,7 @@ private:
 
       // 📴 Выключаем WiFi до следующей попытки
       WiFi.disconnect(true, true);
-      delay(100);
+      delay(50);
       WiFi.mode(WIFI_OFF);
       esp_wifi_stop(); // дополнительный сброс
       Serial.println(F("[WiFiManager] WiFi OFF"));
