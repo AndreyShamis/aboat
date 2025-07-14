@@ -386,6 +386,7 @@ public:
         Serial.println("║   E         - Emergency stop                                    ║");
         Serial.println("║   R         - Request telemetry                                ║");
         Serial.println("║   P         - Send ping                                        ║");
+        Serial.println("║   P:1-P:100 - Oil pump control (1-100% power)                  ║");
         Serial.println("║   SCAN      - Spectrum scan (CSV output)                       ║");
         Serial.println("║   demo      - Run demo commands sequence                       ║");
         Serial.println("║                                                                  ║");
@@ -433,6 +434,16 @@ public:
         else if (cmd == "R") {
             requestTelemetry();
         }
+        else if (cmd.startsWith("P:")) {
+            // Oil pump command P:1-P:100
+            String param = cmd.substring(2);
+            int pumpPower = param.toInt();
+            if (pumpPower >= 1 && pumpPower <= 100) {
+                sendOilPumpCommand(pumpPower);
+            } else {
+                addLog("[MC] ❌ Invalid pump power: " + param + " (must be 1-100)");
+            }
+        }
         else if (cmd == "P") {
             sendPingCommand();
         }
@@ -443,11 +454,11 @@ public:
             // Quick demo commands
             addLog("[MC] 📋 Running demo commands...");
             requestFullDiagnostics();
-            delay(500);
+            vTaskDelay(pdMS_TO_TICKS(2000));
             requestLoRaStatus();
-            delay(500);
+            vTaskDelay(pdMS_TO_TICKS(2000));
             sendNavigationCommand("status");
-            delay(500);
+            vTaskDelay(pdMS_TO_TICKS(2000));
             sendPingCommand();
             addLog("[MC] ✅ Demo complete");
         }
@@ -653,49 +664,6 @@ private:
             addLog("📥RSSI:raw=" + String(rpt.rawRssi)+" ,smoothed=" + String(rpt.smoothedRssi));
             break;
         }
-            // case CMD_REQUEST_ASA:
-            // {
-
-            //     // 1. Проверка длины (int + int + float)
-            //     if (hdr.payloadLen != sizeof(uint8_t))
-            //     {
-            //         addLog("[MC] Invalid ASA packet size");
-            //         break;
-            //     }
-
-            //     if (abs(rssi / currentProfileIndex) < 5)
-            //     {
-            //         addLog("[MC] Received ASA response with SNR=" + String(snr, 1) +
-            //                ", RSSI=" + String(rssi) + "dBm, but no change in profile index.abs(rssi/currentProfileIndex)=" + String(abs(rssi / currentProfileIndex)) + "< 10");
-            //         break;
-            //     }
-
-            //     // 2. Прочитать поля из буфера
-            //     PacketAsaRequest req;
-            //     req.packetType = CMD_REQUEST_ASA;
-            //     req.packetId = hdr.packetId;
-            //     req.payloadLen = hdr.payloadLen;
-
-            //     uint8_t profileIndex = buf[0];
-            //     const auto &profile = loraProfiles[profileIndex];
-            //     addLog("[MC] Received ASA request from sender " + String(sender) +
-            //            ", packetId=" + String(hdr.packetId) +
-            //            ", payloadLen=" + String(hdr.payloadLen) + " (profileIndex=" + String(profileIndex) + " profile: SF=" + String(profile.spreadingFactor) + ", BW=" + String(profile.bandwidth) + ", CR=" + String(profile.codingRate) + ")");
-            //     // Формируем ответ
-            //     PacketAsaApprove resp{};
-            //     resp.packetType = CMD_REPOSNCE_ASA;
-            //     resp.packetId = nextPacketId++;
-            //     resp.payloadLen = sizeof(uint8_t);
-            //     resp.profileIndex = profileIndex;
-
-            //     loraComm->sendPacket(resp, sender);
-            //     addLog("⚙️ MC: Approving and applying LoRa profile index " + String(profileIndex));
-
-            //     delay(50);
-            //     applyProfile(profileIndex);
-            //     break;
-            // }
-
         case CMD_COMMAND_RESPONSE:
         {
             // Response to our D, L, N, W commands
@@ -755,5 +723,11 @@ private:
         uint8_t code = what;
         loraComm->sendPacketBase(BOAT_DEVICE_ID, cmd, (const uint8_t*)&code);
         addLog("[MC] Sent P(request info=" + String((char)what) + ") to boat");
+    }
+    void sendOilPumpCommand(int power)
+    {
+        String cmdStr = "P:" + String(power);
+        sendCommandString(cmdStr);
+        addLog("[MC] 🛢️ Sent oil pump command: " + cmdStr + " (power: " + String(power) + "%)");
     }
 };

@@ -79,7 +79,7 @@ private:
     std::vector<PendingSend> pending;
     SemaphoreHandle_t pendingMutex = nullptr;  // Мьютекс для pending vector
     static const uint8_t MAX_RETRIES = 3;
-    static const uint32_t RETRY_TIMEOUT_MS = 4500;
+    static const uint32_t RETRY_TIMEOUT_MS = 8500;
     
     // Mode & profiles
     RadioMode _mode{RadioMode::LORA};
@@ -256,7 +256,7 @@ private:
                     LLog(fullLog);
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(5));
+            vTaskDelay(pdMS_TO_TICKS(2));
         }
     }
     
@@ -293,7 +293,7 @@ private:
                 String fullLog = String(logBuffer) + ", pl=" + payloadHex;
                 LLog(fullLog);
             }
-            vTaskDelay(pdMS_TO_TICKS(5)); 
+            vTaskDelay(pdMS_TO_TICKS(20)); 
         }
     }
     
