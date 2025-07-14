@@ -1111,24 +1111,25 @@ public:
             String modeStr = (currentMode == RadioMode::FSK) ? "GFSK" : "LoRa";
             addLog("📊 Fresh data: Mode=" + modeStr + ", RSSI=" + String(rssi, 2) + ", Raw SNR=" + String(snr, 2));
             
-            // 🔧 GFSK Fix: В GFSK режиме SNR может быть неточным
-            // Для RadioLib SX1262 в GFSK режиме getSNR() возвращает некорректные значения
-            if (currentMode == RadioMode::FSK) {
-                float originalSnr = snr;
-                // В GFSK режиме используем фиксированное SNR на основе RSSI
-                if (rssi > -50.0f) {
-                    snr = 15.0f;  // Отличный сигнал
-                } else if (rssi > -70.0f) {
-                    snr = 10.0f;  // Хороший сигнал  
-                } else if (rssi > -85.0f) {
-                    snr = 8.0f;   // Приемлемый сигнал
-                } else {
-                    snr = 5.0f;   // Слабый сигнал - стоит вернуться к LoRa
-                }
-                addLog("🔧 GFSK SNR Fix: " + String(originalSnr, 1) + "dB → " + String(snr, 1) + "dB (RSSI-based estimate)");
-            }
-            
             sensorCache.update(rssi, snr);
+        }
+        
+        // 🔧 GFSK Fix: В GFSK режиме SNR может быть неточным
+        // Применяем коррекцию SNR для GFSK ВСЕГДА (как для свежих, так и для кэшированных данных)
+        RadioMode currentMode = loraComm->mode();
+        if (currentMode == RadioMode::FSK) {
+            float originalSnr = snr;
+            // В GFSK режиме используем фиксированное SNR на основе RSSI
+            if (rssi > -50.0f) {
+                snr = 15.0f;  // Отличный сигнал
+            } else if (rssi > -70.0f) {
+                snr = 10.0f;  // Хороший сигнал  
+            } else if (rssi > -85.0f) {
+                snr = 8.0f;   // Приемлемый сигнал
+            } else {
+                snr = 5.0f;   // Слабый сигнал - стоит вернуться к LoRa
+            }
+            addLog("🔧 GFSK SNR Fix: " + String(originalSnr, 1) + "dB → " + String(snr, 1) + "dB (RSSI-based estimate)");
         }
 
         int bestIndex = loraComm->getCurrentProfileIndex();
