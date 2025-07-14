@@ -152,13 +152,33 @@ public:
 
     void applyProfile(uint8_t idx)
     {
-        currentProfileIndex = idx;
-        const auto &p = loraProfiles[idx];
-        addLog("⚙️ Applying LoRa profile index " + String(idx) +
-               " (SF=" + String(p.spreadingFactor) +
-               ", BW=" + String(p.bandwidth) +
-               ", CR=" + String(p.codingRate) + ")");
-        loraComm->applySettings(p.spreadingFactor, p.codingRate, p.bandwidth);
+        if (idx >= LORA_PROFILE_COUNT) {
+            addLog("❌ Недопустимый индекс профиля: " + String(idx));
+            return;
+        }
+        
+        const auto& profile = loraProfiles[idx];
+        
+        // Используем новый метод LoRaCore для применения профилей из settings.h
+        if (loraComm->applyProfileFromSettings(idx)) {
+            currentProfileIndex = idx;
+            
+            String modeStr = (profile.mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
+            
+            if (profile.mode == RadioProfileMode::LORA) {
+                addLog("⚙️ MC: Применён " + modeStr + " профиль " + String(idx) + 
+                       " (SF=" + String(profile.spreadingFactor) + 
+                       ", CR=" + String(profile.codingRate) + 
+                       ", BW=" + String(profile.bandwidth, 1) + "kHz)");
+            } else {
+                addLog("⚙️ MC: Применён " + modeStr + " профиль " + String(idx) + 
+                       " (Bitrate=" + String(profile.bitrate) + 
+                       ", Dev=" + String(profile.deviation) + 
+                       ", RxBW=" + String(profile.bandwidth, 1) + "kHz)");
+            }
+        } else {
+            addLog("❌ MC: Ошибка применения профиля " + String(idx));
+        }
     }
 
     void scanSpectrumCSV(float startMHz = 863.0f,
@@ -361,10 +381,15 @@ public:
         Serial.println("║   D:full - Full diagnostic report                              ║");
         Serial.println("║   D:ext  - Extended diagnostic report (longer)                 ║");
         Serial.println("║                                                                  ║");
-        Serial.println("║ 📡 LoRa Commands (L:)                                          ║");
-        Serial.println("║   L:S       - LoRa status                                       ║");
-        Serial.println("║   L:P[0-8]  - Set LoRa profile (0=robust, 8=fast)              ║");
-        Serial.println("║   L:adapt   - Trigger adaptive LoRa                            ║");
+        Serial.println("║ 📡 LoRa/GFSK Commands (L:)                                     ║");
+        Serial.println("║   L:S         - LoRa status                                     ║");
+        Serial.println("║   L:P[0-12]   - Set profile (0-8=LoRa, 9-12=GFSK)              ║");
+        Serial.println("║                 0=🛡️Max range, 8=🚀Fast LoRa, 12=🚀Max GFSK     ║");
+        Serial.println("║   L:adapt     - Trigger adaptive LoRa                          ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ 📋 Profile Details:                                            ║");
+        Serial.println("║   LoRa Profiles (0-8): SF12→SF7, bandwidth 125→500kHz         ║");
+        Serial.println("║   GFSK Profiles (9-12): 9.6k→76.8k bitrate, excellent signal  ║");
         Serial.println("║                                                                  ║");
         Serial.println("║ 🧭 Navigation Commands (N:)                                    ║");
         Serial.println("║   N:M       - Manual mode                                       ║");
@@ -388,7 +413,9 @@ public:
         Serial.println("║   P         - Send ping                                        ║");
         Serial.println("║   P:1-P:100 - Oil pump control (1-100% power)                  ║");
         Serial.println("║   SCAN      - Spectrum scan (CSV output)                       ║");
+        Serial.println("║   profiles  - Show all available radio profiles                ║");
         Serial.println("║   demo      - Run demo commands sequence                       ║");
+        Serial.println("║   help      - Show this help                                   ║");
         Serial.println("║                                                                  ║");
         Serial.println("║ 💡 Convenience methods (call directly in code):                ║");
         Serial.println("║   mc.printHelp()                  - Show this help              ║");
@@ -398,6 +425,44 @@ public:
         Serial.println("║   mc.setNavigationMode(\"manual\")  - Set navigation mode       ║");
         Serial.println("╚══════════════════════════════════════════════════════════════════╝");
         Serial.println();
+    }
+
+    // Показать информацию о всех доступных профилях
+    void printProfileInfo()
+    {
+        Serial.println("\n╔══════════════════════════════════════════════════════════════════╗");
+        Serial.println("║                      RADIO PROFILE INFORMATION                   ║");
+        Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+        
+        for (uint8_t i = 0; i < LORA_PROFILE_COUNT; i++) {
+            const auto& profile = loraProfiles[i];
+            String line = "║ " + String(i, DEC);
+            if (i < 10) line += " ";
+            
+            if (profile.mode == RadioProfileMode::LORA) {
+                line += ": LoRa SF" + String(profile.spreadingFactor) + 
+                       " CR4/" + String(profile.codingRate) + 
+                       " BW" + String(profile.bandwidth, 0) + "k";
+            } else {
+                line += ": GFSK " + String(profile.bitrate/1000.0f, 1) + "kb/s" +
+                       " dev" + String(profile.deviation/1000.0f, 1) + "k" +
+                       " bw" + String(profile.bandwidth, 0) + "k";
+            }
+            
+            // Дополняем пробелами до 66 символов
+            while (line.length() < 67) line += " ";
+            line += "║";
+            Serial.println(line);
+        }
+        
+        Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+        String currentInfo = "║ Current: " + String(loraComm->getCurrentProfileIndex()) + " (" + 
+                             loraComm->getCurrentProfileInfo() + ")";
+        // Дополняем пробелами до 67 символов  
+        while (currentInfo.length() < 67) currentInfo += " ";
+        currentInfo += "║";
+        Serial.println(currentInfo);
+        Serial.println("╚══════════════════════════════════════════════════════════════════╝");
     }
 
     // Process commands from Serial Monitor
@@ -449,6 +514,9 @@ public:
         }
         else if (cmd == "help" || cmd == "HELP" || cmd == "h" || cmd == "H") {
             printHelp();
+        }
+        else if (cmd == "profiles" || cmd == "PROFILES") {
+            printProfileInfo();
         }
         else if (cmd == "demo") {
             // Quick demo commands

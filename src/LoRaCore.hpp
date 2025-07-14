@@ -94,6 +94,11 @@ private:
     float currentFreq{LORA_FREQUENCY};
     int8_t currentTX{LORA_TX_POWER};
     
+    // FSK runtime tracking
+    uint32_t currentBitrate{0};
+    uint32_t currentDeviation{0};
+    uint8_t currentProfileIndex{0};
+    
     // Thresholds
     static constexpr float RSSI_ENTER_FSK = -85.0f;
     static constexpr float RSSI_LEAVE_FSK = -92.0f;
@@ -128,14 +133,16 @@ private:
     
     bool applyFSK(const FSKProfile &p)
     {
-        return radio.setModem(RADIOLIB_MODEM_FSK) == RADIOLIB_ERR_NONE &&
-               radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
-               radio.setBitRate(p.bitrate) == RADIOLIB_ERR_NONE &&
-               radio.setFrequencyDeviation(p.deviation) == RADIOLIB_ERR_NONE &&
-               radio.setRxBandwidth(p.rxBw) == RADIOLIB_ERR_NONE &&
-               radio.setPreambleLength(4) == RADIOLIB_ERR_NONE &&
-               radio.setCRC(true) == RADIOLIB_ERR_NONE &&
-               radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE;
+        // Для SX1262 используем beginFSK() - это GFSK модуляция
+        // Параметры: bitrate (kbps), freqDev (kHz), rxBw (kHz), preambleLength
+        int result = radio.beginFSK(p.bitrate / 1000.0f, p.deviation / 1000.0f, 
+                                    p.rxBw / 1000.0f, 4);
+        if (result != RADIOLIB_ERR_NONE) {
+            return false;
+        }
+        
+        // Включаем CRC
+        return radio.setCRC(true) == RADIOLIB_ERR_NONE;
     }
     
     bool switchTo(RadioMode m)
@@ -147,7 +154,7 @@ private:
         {
             _mode = m;
             if (_log)
-                LLog(String("LoRaCore: Switched to ") + (m == RadioMode::LORA ? "LoRa" : "FSK"));
+                LLog(String("LoRaCore: Switched to ") + (m == RadioMode::LORA ? "LoRa" : "GFSK"));
             radio.startReceive();
         }
         return ok;
@@ -556,9 +563,177 @@ public:
                radioSemaphore != nullptr && 
                pendingMutex != nullptr;
     }
+    
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ENHANCED PROFILE METHODS
+    // ═══════════════════════════════════════════════════════════════════════════
+    bool applyProfileFromSettings(uint8_t profileIndex);
+    String getCurrentProfileInfo() const;
+    uint8_t getCurrentProfileIndex() const { return currentProfileIndex; }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
 // STATIC MEMBER DEFINITION
 // ═══════════════════════════════════════════════════════════════════════════
 volatile bool LoRaCore::packetReceivedFlag = false;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ENHANCED PROFILE APPLICATION
+// ═══════════════════════════════════════════════════════════════════════════
+bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
+{
+    if (profileIndex >= LORA_PROFILE_COUNT) {
+        LLog("LoRaCore: Недопустимый индекс профиля: " + String(profileIndex));
+        return false;
+    }
+    
+    const auto& profile = loraProfiles[profileIndex];
+    
+    if (radioSemaphore && xSemaphoreTake(radioSemaphore, pdMS_TO_TICKS(1000)) == pdTRUE) {
+        radio.standby();
+        
+        bool success = false;
+        
+        if (profile.mode == RadioProfileMode::LORA) {
+            // Применяем LoRa профиль
+            success = radio.setModem(RADIOLIB_MODEM_LORA) == RADIOLIB_ERR_NONE &&
+                     radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
+                     radio.setSpreadingFactor(profile.spreadingFactor) == RADIOLIB_ERR_NONE &&
+                     radio.setCodingRate(profile.codingRate) == RADIOLIB_ERR_NONE &&
+                     radio.setBandwidth(profile.bandwidth) == RADIOLIB_ERR_NONE &&
+                     radio.setPreambleLength(8) == RADIOLIB_ERR_NONE &&
+                     radio.setCRC(true) == RADIOLIB_ERR_NONE &&
+                     radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE;
+            
+            if (success) {
+                _mode = RadioMode::LORA;
+                currentSF = profile.spreadingFactor;
+                currentCR = profile.codingRate;
+                currentBW = profile.bandwidth;
+                currentProfileIndex = profileIndex;
+                LLog("LoRaCore: Применён LoRa профиль " + String(profileIndex) + 
+                     " (SF=" + String(profile.spreadingFactor) + 
+                     ", CR=" + String(profile.codingRate) + 
+                     ", BW=" + String(profile.bandwidth, 1) + "kHz)");
+            }
+        } 
+        else if (profile.mode == RadioProfileMode::FSK) {
+            // Применяем GFSK профиль (SX1262 поддерживает GFSK, не классический FSK)
+            int result;
+            
+            // Убеждаемся что модуль в standby
+            radio.standby();
+            delay(5);
+            
+            // Для SX1262 попробуем альтернативный подход - сначала настроим модем FSK
+            result = radio.setModem(RADIOLIB_MODEM_FSK);
+            if (result != RADIOLIB_ERR_NONE) {
+                LLog("LoRaCore: GFSK setModem error: " + String(result));
+                xSemaphoreGive(radioSemaphore);
+                return false;
+            }
+            
+            // Устанавливаем частоту
+            result = radio.setFrequency(currentFreq);
+            if (result != RADIOLIB_ERR_NONE) {
+                LLog("LoRaCore: GFSK setFrequency error: " + String(result));
+                xSemaphoreGive(radioSemaphore);
+                return false;
+            }
+            
+            // Попробуем использовать стандартные методы вместо beginFSK
+            result = radio.setBitRate(profile.bitrate / 1000.0f);
+            if (result == RADIOLIB_ERR_NONE) {
+                // Если setBitRate работает, используем классический подход
+                LLog("LoRaCore: GFSK setBitRate успешно, используем классический подход");
+                
+                result = radio.setFrequencyDeviation(profile.deviation / 1000.0f);
+                if (result != RADIOLIB_ERR_NONE) {
+                    LLog("LoRaCore: GFSK setFrequencyDeviation error: " + String(result));
+                    xSemaphoreGive(radioSemaphore);
+                    return false;
+                }
+                
+                result = radio.setRxBandwidth(profile.bandwidth);
+                if (result != RADIOLIB_ERR_NONE) {
+                    LLog("LoRaCore: GFSK setRxBandwidth error: " + String(result) + 
+                         " (trying to set " + String(profile.bandwidth, 1) + "kHz)");
+                    xSemaphoreGive(radioSemaphore);
+                    return false;
+                }
+                
+                LLog("LoRaCore: GFSK классический подход успешно настроен");
+            } else {
+                // Если setBitRate не работает, попробуем beginFSK с проверенными параметрами
+                LLog("LoRaCore: setBitRate не поддерживается, пробуем beginFSK...");
+                
+                // Проверим если битрейт ниже минимума SX1262
+                if (profile.bitrate < 4800) {
+                    LLog("LoRaCore: GFSK bitrate " + String(profile.bitrate) + " below SX1262 minimum (4800)");
+                    xSemaphoreGive(radioSemaphore);
+                    return false;
+                }
+                
+                // Попробуем с увеличенной длиной преамбулы и другими параметрами
+                result = radio.beginFSK(profile.bitrate / 1000.0f, profile.deviation / 1000.0f, 
+                                        profile.bandwidth, 32, 10.0f, false);
+                if (result != RADIOLIB_ERR_NONE) {
+                    LLog("LoRaCore: GFSK beginFSK error: " + String(result) + 
+                         " (bitrate=" + String(profile.bitrate / 1000.0f, 1) + "kbps" +
+                         ", dev=" + String(profile.deviation / 1000.0f, 1) + "kHz" +
+                         ", rxBw=" + String(profile.bandwidth, 1) + "kHz)");
+                    xSemaphoreGive(radioSemaphore);
+                    return false;
+                }
+            }
+            
+            // Включаем CRC
+            result = radio.setCRC(true);
+            if (result != RADIOLIB_ERR_NONE) {
+                LLog("LoRaCore: GFSK setCRC error: " + String(result));
+                xSemaphoreGive(radioSemaphore);
+                return false;
+            }
+            
+            // Если дошли сюда - всё успешно
+            success = true;
+            _mode = RadioMode::FSK;
+            currentBitrate = profile.bitrate;
+            currentDeviation = profile.deviation;
+            currentBW = profile.bandwidth;
+            currentProfileIndex = profileIndex;
+            LLog("LoRaCore: Применён GFSK профиль " + String(profileIndex) + 
+                 " (Bitrate=" + String(profile.bitrate) + 
+                 ", Dev=" + String(profile.deviation) + 
+                 ", RxBW=" + String(profile.bandwidth, 1) + "kHz)");
+        }
+        
+        if (success) {
+            radio.startReceive();
+        } else {
+            LLog("LoRaCore: Ошибка применения профиля " + String(profileIndex));
+        }
+        
+        xSemaphoreGive(radioSemaphore);
+        return success;
+    }
+    
+    LLog("LoRaCore: Не удалось захватить радио семафор для профиля " + String(profileIndex));
+    return false;
+}
+
+// Получить информацию о текущем профиле
+String LoRaCore::getCurrentProfileInfo() const
+{
+    if (_mode == RadioMode::LORA) {
+        return "LoRa #" + String(currentProfileIndex) + 
+               ": SF=" + String(currentSF) + 
+               ", CR=" + String(currentCR) + 
+               ", BW=" + String(currentBW, 1) + "kHz";
+    } else {
+        return "FSK #" + String(currentProfileIndex) + 
+               ": " + String(currentBitrate/1000.0f, 1) + "kb/s" +
+               ", dev=" + String(currentDeviation/1000.0f, 1) + "k" +
+               ", bw=" + String(currentBW, 1) + "k";
+    }
+}

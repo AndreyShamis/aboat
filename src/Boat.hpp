@@ -356,7 +356,7 @@ public:
                                         extDiag += "ChipModel:" + String(ESP.getChipModel()) + ";";
                                         extDiag += "TempSensors:" + String(temps.getSensorCount()) + ";";
                                         extDiag += "WiFiStatus:" + String(WiFi.status()) + ";";
-                                        extDiag += "LoRaProfile:" + String(currentProfileIndex) + ";";
+                                        extDiag += "LoRaProfile:" + String(loraComm->getCurrentProfileIndex()) + ";";
                                         extDiag += "Safety:" + safetyMonitor.getStatusString() + ";";
                                         extDiag += "Performance:avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms;";
                                         extDiag += "Stack:" + stackMonitor.getCompactStatus();
@@ -381,7 +381,7 @@ public:
                                {
                                     String response = "L:";
                                     if (arg == "S" || arg == "status") {
-                                        String status = "Profile:" + String(currentProfileIndex) + 
+                                        String status = "Profile:" + String(loraComm->getCurrentProfileIndex()) + 
                                                ",RSSI:" + String(smoothedRssi) + "dBm";
                                         addLog("[LORA] " + status);
                                         response += status;
@@ -400,7 +400,7 @@ public:
                                         adaptiveLoraUpdate();
                                         response += "Adaptive LoRa triggered";
                                     } else {
-                                        response += "Current profile:" + String(currentProfileIndex) + ",RSSI:" + String(smoothedRssi) + "dBm";
+                                        response += "Current profile:" + String(loraComm->getCurrentProfileIndex()) + ",RSSI:" + String(smoothedRssi) + "dBm";
                                     }
                                     
                                     // Send response back to MissionControl
@@ -787,8 +787,7 @@ public:
                 {
                     uint8_t profileIndex = buf[0];
             
-                    addLog("✅ ASA response received. Applying higher LoRa profile old/new index: " + String(currentProfileIndex) + "/" + String(profileIndex));
-                    currentProfileIndex = profileIndex;
+                    addLog("✅ ASA response received. Applying higher LoRa profile old/new index: " + String(loraComm->getCurrentProfileIndex()) + "/" + String(profileIndex));
                     applyProfile(profileIndex);
                 }
                 else
@@ -921,7 +920,7 @@ public:
             ping.packetId = nextPacketId++;
             ping.payloadLen = 0;
             loraComm->sendPacketBase(MISSION_CONTROL_ID, ping, nullptr, false);
-            addLog("[PROF:" + String(currentProfileIndex) + "] 🔄 Ping → MC");
+            addLog("[PROF:" + String(loraComm->getCurrentProfileIndex()) + "] 🔄 Ping → MC");
             lastPingSent = millis();
         }
 
@@ -1102,13 +1101,37 @@ public:
         if (sensorCache.isValid()) {
             rssi = sensorCache.lastRSSI;
             snr = sensorCache.lastSNR;
+            addLog("🔄 Using cached values: RSSI=" + String(rssi, 2) + ", SNR=" + String(snr, 2));
         } else {
             rssi = loraComm->getRadio().getRSSI();
             snr = loraComm->getRadio().getSNR();
+            
+            // Debug: показываем режим и исходные значения
+            RadioMode currentMode = loraComm->mode();
+            String modeStr = (currentMode == RadioMode::FSK) ? "GFSK" : "LoRa";
+            addLog("📊 Fresh data: Mode=" + modeStr + ", RSSI=" + String(rssi, 2) + ", Raw SNR=" + String(snr, 2));
+            
+            // 🔧 GFSK Fix: В GFSK режиме SNR может быть неточным
+            // Для RadioLib SX1262 в GFSK режиме getSNR() возвращает некорректные значения
+            if (currentMode == RadioMode::FSK) {
+                float originalSnr = snr;
+                // В GFSK режиме используем фиксированное SNR на основе RSSI
+                if (rssi > -50.0f) {
+                    snr = 15.0f;  // Отличный сигнал
+                } else if (rssi > -70.0f) {
+                    snr = 10.0f;  // Хороший сигнал  
+                } else if (rssi > -85.0f) {
+                    snr = 8.0f;   // Приемлемый сигнал
+                } else {
+                    snr = 5.0f;   // Слабый сигнал - стоит вернуться к LoRa
+                }
+                addLog("🔧 GFSK SNR Fix: " + String(originalSnr, 1) + "dB → " + String(snr, 1) + "dB (RSSI-based estimate)");
+            }
+            
             sensorCache.update(rssi, snr);
         }
 
-        int bestIndex = currentProfileIndex;
+        int bestIndex = loraComm->getCurrentProfileIndex();
         if (PongRssi >= 0)
         {
             PongRssi = rssi;
@@ -1117,9 +1140,10 @@ public:
         // Enhanced profile selection with SNR consideration
         bestIndex = selectOptimalProfile(PongRssi, snr);
 
-        if (bestIndex != currentProfileIndex)
+        uint8_t currentProfile = loraComm->getCurrentProfileIndex();
+        if (bestIndex != currentProfile)
         {
-            String direction = bestIndex > currentProfileIndex ? "upgrade" : "downgrade";
+            String direction = bestIndex > currentProfile ? "upgrade" : "downgrade";
             addLog("[adaptiveLoraUpdate] rssi:" + String(PongRssi) + " snr:" + String(snr) +
                    " → Proposing " + direction + " to profile " + String(bestIndex));
 
@@ -1138,30 +1162,65 @@ public:
     
     // Enhanced profile selection with SNR consideration
     int selectOptimalProfile(float rssi, float snr) {
-        // If SNR is very poor, force lower profile regardless of RSSI
-        if (snr < -5.0f) {
-            return min(2, (int)currentProfileIndex); // Force to profile 2 or lower
+        addLog("🔍 Profile Selection: RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) + "dB");
+        
+        // Используем новую таблицу с поддержкой FSK и SNR
+        for (size_t i = 0; i < rssiProfileCount; ++i) {
+            addLog("  🔸 Check [" + String(i) + "]: minRSSI=" + String(rssiToProfileTable[i].minRssi, 1) + 
+                   ", minSNR=" + String(rssiToProfileTable[i].minSnr, 1) + 
+                   " → profile " + String(rssiToProfileTable[i].profileIndex));
+                   
+            if (rssi >= rssiToProfileTable[i].minRssi && 
+                snr >= rssiToProfileTable[i].minSnr) {
+                
+                int suggestedProfile = rssiToProfileTable[i].profileIndex;
+                String modeStr = (loraProfiles[suggestedProfile].mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
+                
+                addLog("✅ MATCH! RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) + 
+                       "dB → профиль " + String(suggestedProfile) + " (" + modeStr + ")");
+                
+                return suggestedProfile;
+            }
         }
         
-        // If both RSSI and SNR are good, we can use higher profile
-        if (rssi > -90.0f && snr > 8.0f) {
-            return min(8, rssiToIndex(rssi) + 1); // One step higher than RSSI suggests
-        }
-        
-        return rssiToIndex(rssi);
+        // Fallback: возвращаем самый надёжный профиль
+        addLog("❌ No matches found, fallback to profile 0");
+        return 0;
     }
 
     void applyProfile(uint8_t idx)
     {
-        auto &p = loraProfiles[idx];
-        loraComm->applySettings(p.spreadingFactor, p.codingRate, p.bandwidth);
+        if (idx >= LORA_PROFILE_COUNT) {
+            addLog("❌ Недопустимый индекс профиля: " + String(idx));
+            return;
+        }
+        
+        const auto& profile = loraProfiles[idx];
+        
+        // Используем новый метод LoRaCore для применения профилей из settings.h
+        if (loraComm->applyProfileFromSettings(idx)) {
+            String modeStr = (profile.mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
+            
+            if (profile.mode == RadioProfileMode::LORA) {
+                addLog("⚙️ Применён " + modeStr + " профиль " + String(idx) + 
+                       " (SF=" + String(profile.spreadingFactor) + 
+                       ", CR=" + String(profile.codingRate) + 
+                       ", BW=" + String(profile.bandwidth, 1) + "kHz)");
+            } else {
+                addLog("⚙️ Применён " + modeStr + " профиль " + String(idx) + 
+                       " (Bitrate=" + String(profile.bitrate) + 
+                       ", Dev=" + String(profile.deviation) + 
+                       ", RxBW=" + String(profile.bandwidth, 1) + "kHz)");
+            }
+        } else {
+            addLog("❌ Ошибка применения профиля " + String(idx));
+        }
     }
 
     void restoreDefaultLoRaSettings()
     {
         addLog("🔁 Восстановление стандартных LoRa параметров...");
-        currentProfileIndex = 0;           // Сбрасываем индекс профиля
-        applyProfile(currentProfileIndex); // Применяем профиль 0 (стандартный)
+        applyProfile(0); // Применяем профиль 0 (стандартный)
         asaActive = false;                 // Деактивируем ASA
         waitingForASAAck = false;          // Сбрасываем ожидание ACK
     }
@@ -1336,7 +1395,7 @@ public:
         
         // Enhanced LoRa statistics
         JsonObject loraObj = doc[F("lora")].to<JsonObject>();
-        loraObj[F("profile_index")] = currentProfileIndex;
+        loraObj[F("profile_index")] = loraComm->getCurrentProfileIndex();
         loraObj[F("smoothed_rssi")] = smoothedRssi;
         if (sensorCache.isValid()) {
             loraObj[F("rssi")] = sensorCache.lastRSSI;
@@ -1643,7 +1702,6 @@ private:
     std::vector<String> logBuffer;
     SemaphoreHandle_t logMutex = nullptr;  // Мьютекс для потокобезопасного логирования
     unsigned long lastPingSent = 0;
-    uint8_t currentProfileIndex = 0;
     unsigned long lastAdaptiveSwitchTime = 0;
     float PongRssi = 0; // RSSI при получении PONG
     bool missionCOntrolIsActivae = false;
@@ -1939,8 +1997,7 @@ private:
         if (hdr.payloadLen == sizeof(uint8_t)) {
             uint8_t profileIndex = buf[0];
             addLog("✅ ASA response received. Applying higher LoRa profile old/new index: " + 
-                   String(currentProfileIndex) + "/" + String(profileIndex));
-            currentProfileIndex = profileIndex;
+                   String(loraComm->getCurrentProfileIndex()) + "/" + String(profileIndex));
             applyProfile(profileIndex);
         } else {
             addLog("⚠️ Invalid ASA payload size");
