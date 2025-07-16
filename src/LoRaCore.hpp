@@ -531,20 +531,94 @@ private:
 
                 if (len > 0 && len <= sizeof(LoRaPacket))
                 {
+                    // Проверяем минимальную длину пакета (должна быть хотя бы размер заголовка)
+                    if (len < offsetof(LoRaPacket, payload)) {
+                        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
+                        {
+                            char shortLog[80];
+                            snprintf(shortLog, sizeof(shortLog), "🚫 PACKET TOO SHORT: len=%d < header_size=%d", 
+                                     len, (int)offsetof(LoRaPacket, payload));
+                            logBuffer.push_back(String(shortLog));
+                            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                            {
+                                logBuffer.erase(logBuffer.begin());
+                            }
+                            xSemaphoreGive(logMutex);
+                        }
+                        radio.startReceive();
+                        if (radioSemaphore)
+                            xSemaphoreGive(radioSemaphore);
+                        continue;
+                    }
+                    
                     memset(&pkt, 0, sizeof(pkt));
                     radio.readData((uint8_t *)&pkt, len);
                     unsigned long t1 = millis();
                     radio.startReceive();
 
+                    // Валидация целостности пакета
                     if (pkt.senderId == myDeviceId)
                     {
                         if (radioSemaphore)
                             xSemaphoreGive(radioSemaphore);
                         continue;
                     }
+                    
+                    // Проверяем базовые ограничения пакета
+                    bool packetValid = true;
+                    String errorReason = "";
+                    
+                    // Проверка ID устройств (разумные диапазоны)
+                    if (pkt.senderId == 0 || pkt.senderId > 250) {
+                        packetValid = false;
+                        errorReason = "Invalid senderId=" + String(pkt.senderId);
+                    }
+                    else if (pkt.receiverId == 0 || pkt.receiverId > 250) {
+                        packetValid = false;
+                        errorReason = "Invalid receiverId=" + String(pkt.receiverId);
+                    }
+                    // Проверка длины payload
+                    else if (pkt.payloadLen > MAX_LORA_PAYLOAD) {
+                        packetValid = false;
+                        errorReason = "PayloadLen=" + String(pkt.payloadLen) + " > MAX=" + String(MAX_LORA_PAYLOAD);
+                    }
+                    // Проверка соответствия длины пакета и payload
+                    else if (len < (int)(offsetof(LoRaPacket, payload) + pkt.payloadLen)) {
+                        packetValid = false;
+                        errorReason = "PacketLen=" + String(len) + " < headerSize+" + String(pkt.payloadLen);
+                    }
+                    // Проверка типа пакета (должен быть печатным символом или известным кодом)
+                    else if (pkt.packetType < 0x20 && pkt.packetType != CMD_ACK && 
+                             pkt.packetType != CMD_BULK_ACK && pkt.packetType != CMD_REQUEST_ASA && 
+                             pkt.packetType != CMD_REPOSNCE_ASA) {
+                        packetValid = false;
+                        errorReason = "Invalid packetType=0x" + String(pkt.packetType, HEX);
+                    }
+                    
+                    if (!packetValid) {
+                        // Логируем поврежденный пакет
+                        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
+                        {
+                            char corruptLog[150];
+                            snprintf(corruptLog, sizeof(corruptLog), 
+                                     "🚫 CORRUPT PACKET: len=%d, sender=%u, recv=%u, type=0x%02X, plLen=%u - %s", 
+                                     len, pkt.senderId, pkt.receiverId, pkt.packetType, pkt.payloadLen, errorReason.c_str());
+                            logBuffer.push_back(String(corruptLog));
+                            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                            {
+                                logBuffer.erase(logBuffer.begin());
+                            }
+                            xSemaphoreGive(logMutex);
+                        }
+                        
+                        if (radioSemaphore)
+                            xSemaphoreGive(radioSemaphore);
+                        continue; // Пропускаем поврежденный пакет
+                    }
 
                     String payloadHex = "";
-                    for (int i = 0; i < pkt.payloadLen; i++)
+                    int maxPayloadToShow = std::min((int)pkt.payloadLen, 16); // Ограничиваем до 16 байт для логов
+                    for (int i = 0; i < maxPayloadToShow; i++)
                     {
                         char hexByte[4];
                         snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
