@@ -861,8 +861,9 @@ private:
         } else {
             // Пакет переполнен - отправляем текущий и начинаем новый
             sendBulkAck();
-            pendingBulkAck.addAck(packetId);
-            addLog("[MC] 📦 Started new bulk ACK with packet " + String(packetId));
+            if (pendingBulkAck.addAck(packetId)) {
+                addLog("[MC] 📦 Started new bulk ACK with packet " + String(packetId));
+            }
         }
     }
     
@@ -870,6 +871,11 @@ private:
     void sendBulkAck()
     {
         if (pendingBulkAck.isEmpty()) return;
+        
+        // Диагностика перед отправкой
+        if (pendingBulkAck.hasDuplicates()) {
+            addLog("[MC] ⚠️ WARNING: BULK ACK contains duplicates: " + pendingBulkAck.getDebugInfo());
+        }
         
         pendingBulkAck.packetId = nextPacketId++;
         
@@ -885,11 +891,11 @@ private:
         packBaseIntoLoRa(bulkPacket, MY_DEVICE_ID, BOAT_DEVICE_ID, pendingBulkAck, payload);
         
         if (loraComm->sendHighPriority(bulkPacket)) {
-            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (high priority)");
+            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (high priority): " + pendingBulkAck.getDebugInfo());
         } else {
             // Если высокоприоритетная отправка не удалась, используем обычную
             loraComm->sendPacketBase(BOAT_DEVICE_ID, pendingBulkAck, payload, false);
-            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (standard)");
+            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (standard): " + pendingBulkAck.getDebugInfo());
         }
         
         pendingBulkAck.clear();

@@ -87,11 +87,13 @@ private:
     // Log buffering system
     std::vector<String> logBuffer;
     SemaphoreHandle_t logMutex = nullptr;
-    static const size_t MAX_LOG_BUFFER_SIZE = 50;
-    static const uint8_t MAX_RETRIES = 2;          // Уменьшено с 3 до 2
-    static const uint32_t RETRY_TIMEOUT_MS = 3200;
-
-    // Адаптивные таймауты для разных скоростей передачи
+    static const size_t MAX_LOG_BUFFER_SIZE = 30;
+    
+    // Адаптивные параметры повторной отправки (зависят от профиля)
+    uint8_t currentMaxRetries = 2;
+    uint32_t currentRetryTimeoutMs = 6200;
+    
+    // Базовые константы для расчета адаптивных параметров
     static const uint32_t FAST_TX_THRESHOLD_MS = 100;   // Быстрая передача < 100мс
     static const uint32_t SLOW_TX_THRESHOLD_MS = 1000;  // Медленная передача > 1сек
     static const uint32_t QUEUE_FULL_RETRY_MS = 200;    // Повтор при заполненной очереди
@@ -125,6 +127,70 @@ private:
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE METHODS
     // ═══════════════════════════════════════════════════════════════════════════
+    void updateRetryParameters()
+    {
+        if (_mode == RadioMode::LORA)
+        {
+            // Для LoRa профилей рассчитываем время передачи на основе SF, BW, CR
+            // Приблизительная формула времени передачи пакета в LoRa (в мс)
+            float symbolTime = (1 << currentSF) / (currentBW * 1000); // время символа в секундах
+            float preambleTime = (8 + 4.25f) * symbolTime; // преамбула + sync
+            
+            // Примерная длина пакета 50 байт (включая заголовки)
+            float payloadSymbols = 8.0f + std::max(ceil((8.0f * 50 - 4.0f * currentSF + 28 + 16) / 
+                                                  (4.0f * (currentSF - 2))), 0.0f) * currentCR;
+            float packetTime = (preambleTime + payloadSymbols * symbolTime) * 1000; // в мс
+            
+            // Адаптивный таймаут: 3-4 времени передачи пакета + буфер
+            currentRetryTimeoutMs = std::max(1500U, (uint32_t)(packetTime * 3.5f + 500));
+            
+            // Количество повторов зависит от SF (чем выше SF, тем больше повторов)
+            if (currentSF <= 7) {
+                currentMaxRetries = 2; // Быстрые профили
+            } else if (currentSF <= 9) {
+                currentMaxRetries = 3; // Средние профили  
+            } else {
+                currentMaxRetries = 4; // Медленные но надежные профили
+            }
+            
+            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
+            {
+                char s[120];
+                snprintf(s, sizeof(s), "📊 Adaptive LoRa retry: SF%d → timeout=%ums, retries=%u (pkt≈%.1fms)", 
+                         currentSF, currentRetryTimeoutMs, currentMaxRetries, packetTime);
+                logBuffer.push_back(String(s));
+                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
+                xSemaphoreGive(logMutex);
+            }
+        }
+        else if (_mode == RadioMode::FSK)
+        {
+            // Для FSK/GFSK рассчитываем на основе битрейта
+            // Время передачи 50-байтового пакета при текущем битрейте
+            float packetTime = (50.0f * 8.0f * 1000.0f) / currentBitrate; // в мс
+            
+            // Адаптивный таймаут: 2-3 времени передачи + буфер  
+            currentRetryTimeoutMs = std::max(800U, (uint32_t)(packetTime * 2.5f + 300));
+            
+            // FSK быстрее, меньше повторов
+            if (currentBitrate >= 19200) {
+                currentMaxRetries = 2; // Высокоскоростные FSK
+            } else {
+                currentMaxRetries = 3; // Низкоскоростные FSK
+            }
+            
+            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
+            {
+                char s[120];
+                snprintf(s, sizeof(s), "📊 Adaptive FSK retry: %ukbps → timeout=%ums, retries=%u (pkt≈%.1fms)", 
+                         currentBitrate/1000, currentRetryTimeoutMs, currentMaxRetries, packetTime);
+                logBuffer.push_back(String(s));
+                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
+                xSemaphoreGive(logMutex);
+            }
+        }
+    }
+
     void LLog(const char* s)
     {
 
@@ -144,14 +210,22 @@ private:
 
     bool applyLoRa(const LoRaProfile &p)
     {
-        return radio.setModem(RADIOLIB_MODEM_LORA) == RADIOLIB_ERR_NONE &&
-               radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
-               radio.setSpreadingFactor(p.sf) == RADIOLIB_ERR_NONE &&
-               radio.setCodingRate(p.cr) == RADIOLIB_ERR_NONE &&
-               radio.setBandwidth(p.bw) == RADIOLIB_ERR_NONE &&
-               radio.setPreambleLength(8) == RADIOLIB_ERR_NONE &&
-               radio.setCRC(true) == RADIOLIB_ERR_NONE &&
-               radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE;
+        bool success = radio.setModem(RADIOLIB_MODEM_LORA) == RADIOLIB_ERR_NONE &&
+                      radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
+                      radio.setSpreadingFactor(p.sf) == RADIOLIB_ERR_NONE &&
+                      radio.setCodingRate(p.cr) == RADIOLIB_ERR_NONE &&
+                      radio.setBandwidth(p.bw) == RADIOLIB_ERR_NONE &&
+                      radio.setPreambleLength(8) == RADIOLIB_ERR_NONE &&
+                      radio.setCRC(true) == RADIOLIB_ERR_NONE &&
+                      radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE;
+        
+        if (success) {
+            currentSF = p.sf;
+            currentCR = p.cr;
+            currentBW = p.bw;
+            updateRetryParameters(); // Обновляем адаптивные параметры
+        }
+        return success;
     }
 
     bool applyFSK(const FSKProfile &p)
@@ -165,8 +239,15 @@ private:
             return false;
         }
 
-        // Включаем CRC
-        return radio.setCRC(true) == RADIOLIB_ERR_NONE;
+        // Включаем CRC и обновляем текущие параметры
+        bool success = radio.setCRC(true) == RADIOLIB_ERR_NONE;
+        if (success) {
+            currentBitrate = p.bitrate;
+            currentDeviation = p.deviation; 
+            currentBW = p.rxBw;
+            updateRetryParameters(); // Обновляем адаптивные параметры
+        }
+        return success;
     }
 
     bool switchTo(RadioMode m)
@@ -245,24 +326,62 @@ private:
         PacketId_t ackedIds[10];
         memcpy(ackedIds, &pkt.payload[1], count * sizeof(PacketId_t));
         
-        // Логируем все ID которые будут обработаны (важно для ASA отладки)
+        // Фильтруем дублированные ID и подсчитываем уникальные
+        PacketId_t uniqueIds[10];
+        uint8_t uniqueCount = 0;
+        
+        for (uint8_t i = 0; i < count; i++) {
+            bool isDuplicate = false;
+            // Проверяем, есть ли уже такой ID в списке уникальных
+            for (uint8_t j = 0; j < uniqueCount; j++) {
+                if (uniqueIds[j] == ackedIds[i]) {
+                    isDuplicate = true;
+                    break;
+                }
+            }
+            // Если ID уникальный, добавляем его в список
+            if (!isDuplicate && uniqueCount < 10) {
+                uniqueIds[uniqueCount] = ackedIds[i];
+                uniqueCount++;
+            }
+        }
+        
+        // Логируем результат с информацией о дубликатах
         if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
         {
             String idList = "";
+            String uniqueIdList = "";
+            
+            // Список всех полученных ID
             for (uint8_t i = 0; i < count; i++) {
                 if (i > 0) idList += ",";
                 idList += String(ackedIds[i]);
             }
-            char successLog[150];
-            snprintf(successLog, sizeof(successLog), "📩 BULK ACK received: %u IDs [%s] from device %u", 
-                     count, idList.c_str(), pkt.senderId);
+            
+            // Список уникальных ID  
+            for (uint8_t i = 0; i < uniqueCount; i++) {
+                if (i > 0) uniqueIdList += ",";
+                uniqueIdList += String(uniqueIds[i]);
+            }
+            
+            char successLog[200];
+            if (uniqueCount != count) {
+                snprintf(successLog, sizeof(successLog), 
+                         "📩 BULK ACK: %u IDs [%s] → %u unique [%s] from device %u (filtered %u duplicates)", 
+                         count, idList.c_str(), uniqueCount, uniqueIdList.c_str(), pkt.senderId, count - uniqueCount);
+            } else {
+                snprintf(successLog, sizeof(successLog), "📩 BULK ACK received: %u IDs [%s] from device %u", 
+                         count, idList.c_str(), pkt.senderId);
+            }
+            
             logBuffer.push_back(String(successLog));
             if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
             xSemaphoreGive(logMutex);
         }
         
-        for (uint8_t i = 0; i < count; i++) {
-            handleSingleAck(ackedIds[i], pkt.senderId, pkt.packetType);
+        // Обрабатываем только уникальные ID
+        for (uint8_t i = 0; i < uniqueCount; i++) {
+            handleSingleAck(uniqueIds[i], pkt.senderId, pkt.packetType);
         }
     }
 
@@ -313,6 +432,22 @@ private:
                     }
                     
                     ackCallback(ackedId, senderId, originalPacketType);
+                }
+            }
+            else
+            {
+                // Пакет с таким ID не найден в pending списке - возможно дублированный ACK
+                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
+                {
+                    char s[80];
+                    snprintf(s, sizeof(s), "⚠️ Duplicate ACK ignored: id=%u from device %u (not in pending)", 
+                             ackedId, senderId);
+                    logBuffer.push_back(String(s));
+                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                    {
+                        logBuffer.erase(logBuffer.begin());
+                    }
+                    xSemaphoreGive(logMutex);
                 }
             }
             xSemaphoreGive(pendingMutex);
@@ -550,11 +685,10 @@ private:
             if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(50)) == pdTRUE) // Уменьшен таймаут
             {
                 for (auto it = pending.begin(); it != pending.end();)
+                {                if (now - it->timestamp > currentRetryTimeoutMs)
                 {
-                    if (now - it->timestamp > RETRY_TIMEOUT_MS)
+                    if (it->retries < currentMaxRetries)
                     {
-                        if (it->retries < MAX_RETRIES)
-                        {
                             // Уменьшаем таймаут для повторной отправки до 50мс
                             if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(50)) == pdTRUE)
                             {
@@ -562,7 +696,7 @@ private:
                                 it->retries++;
 
                                 // Логируем только критические повторы
-                                if (it->retries >= MAX_RETRIES - 1)
+                                if (it->retries >= currentMaxRetries - 1)
                                 {
                                     snprintf(s, sizeof(s), "🔄Retry: id=%u #%u, T=%02X, to=%u",
                                              it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.receiverId);
@@ -746,6 +880,7 @@ public:
         currentSF = sf;
         currentCR = cr;
         currentBW = bw;
+        updateRetryParameters(); // Обновляем адаптивные параметры
         radio.startReceive();
         if (radioSemaphore)
             xSemaphoreGive(radioSemaphore);
@@ -837,10 +972,37 @@ public:
         bool ok = xQueueSendToBack(outgoingQueue, &frame, 0) == pdTRUE;
         if (ok && waitForAck)
         {
-            // Потокобезопасное добавление в pending
+            // Потокобезопасное добавление в pending с проверкой дублированных ID
             if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE)
             {
-                pending.push_back({frame, millis(), 0});
+                // Проверяем, нет ли уже пакета с таким ID в pending списке
+                auto existingIt = std::find_if(pending.begin(), pending.end(), 
+                    [&frame](const PendingSend &p) { return p.pkt.packetId == frame.packetId; });
+                
+                if (existingIt != pending.end())
+                {
+                    // Пакет с таким ID уже есть в pending - логируем предупреждение
+                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
+                    {
+                        char s[100];
+                        snprintf(s, sizeof(s), "⚠️ Duplicate packet ID detected: id=%u, type=0x%02X, to=%u", 
+                                 frame.packetId, frame.packetType, frame.receiverId);
+                        logBuffer.push_back(String(s));
+                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                        {
+                            logBuffer.erase(logBuffer.begin());
+                        }
+                        xSemaphoreGive(logMutex);
+                    }
+                    // Обновляем timestamp существующего пакета вместо добавления дубликата
+                    existingIt->timestamp = millis();
+                    existingIt->retries = 0;
+                }
+                else
+                {
+                    // ID уникальный, добавляем в pending
+                    pending.push_back({frame, millis(), 0});
+                }
                 xSemaphoreGive(pendingMutex);
             }
         }
@@ -950,6 +1112,47 @@ public:
     bool applyProfileFromSettings(uint8_t profileIndex);
     String getCurrentProfileInfo() const;
     uint8_t getCurrentProfileIndex() const { return currentProfileIndex; }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADAPTIVE RETRY PARAMETERS GETTERS
+    // ═══════════════════════════════════════════════════════════════════════════
+    uint8_t getCurrentMaxRetries() const { return currentMaxRetries; }
+    uint32_t getCurrentRetryTimeout() const { return currentRetryTimeoutMs; }
+    
+    String getAdaptiveRetryInfo() const
+    {
+        return "Retries:" + String(currentMaxRetries) + 
+               ", Timeout:" + String(currentRetryTimeoutMs) + "ms" +
+               " (" + ((_mode == RadioMode::LORA) ? "LoRa" : "FSK") + ")";
+    }
+
+    // Диагностический метод для отображения текущих pending пакетов
+    String getPendingPacketsInfo() const
+    {
+        if (!pendingMutex)
+            return "No pending mutex";
+            
+        String result = "";
+        if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(50)) == pdTRUE)
+        {
+            result = "Pending(" + String(pending.size()) + "): ";
+            for (size_t i = 0; i < pending.size(); i++) {
+                if (i > 0) result += ", ";
+                result += String(pending[i].pkt.packetId) + "#" + String(pending[i].retries);
+            }
+            if (pending.empty()) {
+                result += "empty";
+            }
+            xSemaphoreGive(pendingMutex);
+        }
+        else
+        {
+            result = "Pending: mutex timeout";
+        }
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -995,6 +1198,7 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                 currentCR = profile.codingRate;
                 currentBW = profile.bandwidth;
                 currentProfileIndex = profileIndex;
+                updateRetryParameters(); // Обновляем адаптивные параметры
                 // LLog("LoRaCore: Применён LoRa профиль " + String(profileIndex) +
                 //      " (SF=" + String(profile.spreadingFactor) +
                 //      ", CR=" + String(profile.codingRate) +
@@ -1096,6 +1300,7 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
             currentDeviation = profile.deviation;
             currentBW = profile.bandwidth;
             currentProfileIndex = profileIndex;
+            updateRetryParameters(); // Обновляем адаптивные параметры
             // LLog("LoRaCore: Применён GFSK профиль " + String(profileIndex) +
             //      " (Bitrate=" + String(profile.bitrate) +
             //      ", Dev=" + String(profile.deviation) +

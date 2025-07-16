@@ -181,6 +181,16 @@ public:
     
     bool addAck(PacketId_t packetId) {
         if (count >= 10) return false;
+        
+        // Проверяем, нет ли уже такого ID в списке (избегаем дублированных ACK)
+        for (uint8_t i = 0; i < count; i++) {
+            if (ackedIds[i] == packetId) {
+                // ID уже есть в списке - не добавляем дубликат
+                return true; // Возвращаем true, так как операция "успешна" (ID уже учтен)
+            }
+        }
+        
+        // ID уникальный, добавляем его
         ackedIds[count] = packetId;
         count++;
         payloadLen = sizeof(count) + (count * sizeof(PacketId_t));
@@ -195,6 +205,29 @@ public:
     
     bool isFull() const { return count >= 10; }
     bool isEmpty() const { return count == 0; }
+
+    // Диагностический метод для отображения содержимого BULK ACK
+    String getDebugInfo() const {
+        String result = "BulkACK(" + String(count) + "): ";
+        for (uint8_t i = 0; i < count; i++) {
+            if (i > 0) result += ",";
+            result += String(ackedIds[i]);
+        }
+        if (count == 0) result += "empty";
+        return result;
+    }
+
+    // Проверка на наличие дублированных ID (для отладки)
+    bool hasDuplicates() const {
+        for (uint8_t i = 0; i < count; i++) {
+            for (uint8_t j = i + 1; j < count; j++) {
+                if (ackedIds[i] == ackedIds[j]) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 };
 
 // Конфиг-пакет (изменение параметра)

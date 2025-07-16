@@ -1801,8 +1801,9 @@ public:
         {
             // Пакет переполнен - отправляем текущий и начинаем новый
             sendBulkAck();
-            pendingBulkAck.addAck(packetId);
-            addLog("[BOAT] 📦 Started new bulk ACK with packet " + String(packetId));
+            if (pendingBulkAck.addAck(packetId)) {
+                addLog("[BOAT] 📦 Started new bulk ACK with packet " + String(packetId));
+            }
         }
     }
 
@@ -1811,6 +1812,11 @@ public:
     {
         if (pendingBulkAck.isEmpty())
             return;
+
+        // Диагностика перед отправкой
+        if (pendingBulkAck.hasDuplicates()) {
+            addLog("[BOAT] ⚠️ WARNING: BULK ACK contains duplicates: " + pendingBulkAck.getDebugInfo());
+        }
 
         pendingBulkAck.packetId = nextPacketId++;
 
@@ -1823,7 +1829,7 @@ public:
 
         // Отправляем bulk ACK в MissionControl
         loraComm->sendPacketBase(MISSION_CONTROL_ID, pendingBulkAck, payload, false);
-        addLog("[BOAT] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets to MC");
+        addLog("[BOAT] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets to MC: " + pendingBulkAck.getDebugInfo());
 
         pendingBulkAck.clear();
         lastBulkAckTime = millis();
