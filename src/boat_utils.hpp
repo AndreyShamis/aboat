@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <time.h>
 
 // Вспомогательные утилиты для оптимизации лодки
 namespace BoatUtils {
@@ -101,6 +102,40 @@ namespace BoatUtils {
         result += String(seconds % 60) + "s";
         
         return result;
+    }
+    
+    // Форматирование времени с миллисекундами
+    String formatTimeWithMillis(unsigned long currentMillis = 0) {
+        if (currentMillis == 0) {
+            currentMillis = millis();
+        }
+        
+        time_t now = time(nullptr);
+        uint16_t milliseconds = currentMillis % 1000;
+        
+        if (now > 1600000000) { // Если системное время синхронизировано
+            struct tm *t = localtime(&now);
+            char buf[9];
+            strftime(buf, sizeof(buf), "%H:%M:%S", t);
+            char fullBuf[13];
+            snprintf(fullBuf, sizeof(fullBuf), "%s.%03d", buf, milliseconds);
+            return String(fullBuf);
+        } else {
+            // Если время не синхронизировано, используем uptime
+            unsigned long totalSeconds = currentMillis / 1000;
+            uint8_t hours = (totalSeconds / 3600) % 24;
+            uint8_t minutes = (totalSeconds / 60) % 60;
+            uint8_t seconds = totalSeconds % 60;
+            
+            char buf[13];
+            snprintf(buf, sizeof(buf), "%02d:%02d:%02d.%03d", hours, minutes, seconds, milliseconds);
+            return String(buf);
+        }
+    }
+    
+    // Создание timestamp для логирования
+    String createTimestamp() {
+        return formatTimeWithMillis();
     }
     
     // Расчет расстояния между GPS координатами (в метрах)

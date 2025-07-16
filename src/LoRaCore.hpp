@@ -7,6 +7,7 @@
 #include "settings.h"
 #include "PacketClasses.hpp"
 #include "LogInterface.hpp"
+#include "boat_utils.hpp"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ENUMS AND STRUCTURES
@@ -86,6 +87,11 @@ private:
     static const uint8_t MAX_RETRIES = 3;
     static const uint32_t RETRY_TIMEOUT_MS = 4500;
 
+    // Адаптивные таймауты для разных скоростей передачи
+    static const uint32_t FAST_TX_THRESHOLD_MS = 100;   // Быстрая передача < 100мс
+    static const uint32_t SLOW_TX_THRESHOLD_MS = 1000;  // Медленная передача > 1сек
+    static const uint32_t QUEUE_FULL_RETRY_MS = 200;    // Повтор при заполненной очереди
+
     // Mode & profiles
     RadioMode _mode{RadioMode::LORA};
     bool _manual{false};
@@ -115,29 +121,21 @@ private:
     // ═══════════════════════════════════════════════════════════════════════════
     // PRIVATE METHODS
     // ═══════════════════════════════════════════════════════════════════════════
+    void LLog(const char* s)
+    {
+
+        // Fallback - прямой вывод если мьютекс недоступен
+        if (_log)
+            _log->addLog(String(s));
+        else
+            Serial.println(s);
+
+    }
+    
+    // Перегрузка для String (для обратной совместимости)
     void LLog(const String &s)
     {
-        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
-        {
-            // Добавляем лог в буфер
-            logBuffer.push_back(s);
-
-            // Если буфер переполнен, удаляем старые записи
-            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-            {
-                logBuffer.erase(logBuffer.begin());
-            }
-
-            xSemaphoreGive(logMutex);
-        }
-        else
-        {
-            // Fallback - прямой вывод если мьютекс недоступен
-            if (_log)
-                _log->addLog(String(s));
-            else
-                Serial.println(s);
-        }
+        LLog(s.c_str());
     }
 
     bool applyLoRa(const LoRaProfile &p)
@@ -196,10 +194,20 @@ private:
                                    { return p.pkt.packetId == ackedId; });
             if (it != pending.end())
             {
-                char logBuffer[100];
-                snprintf(logBuffer, sizeof(logBuffer), "✅ACK received: id=%u, from=%u, type=%02X",
+                char s[100];
+                snprintf(s, sizeof(s), "✅ACK received: id=%u, from=%u, type=%02X",
                          ackedId, pkt.senderId, pkt.packetType);
-                LLog(String(logBuffer));
+                
+                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+                {
+                    logBuffer.push_back(String(s));
+                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                    {
+                        logBuffer.erase(logBuffer.begin());
+                    }
+                    xSemaphoreGive(logMutex);
+                }
+                
                 pending.erase(it);
             }
             xSemaphoreGive(pendingMutex);
@@ -267,7 +275,7 @@ private:
     void receiveTask()
     {
         static LoRaPacket pkt;
-        static char logBuffer[200];
+        static char s[200];
         static String fullLog = "";
 
         while (true)
@@ -305,11 +313,11 @@ private:
                     if (pkt.payloadLen > 16)
                         payloadHex += "...";
 
-                    snprintf(logBuffer, sizeof(logBuffer),
+                    snprintf(s, sizeof(s),
                              "[LEN %d]RX %lums→[%u->%u], T=[%02X/%u], id=%u, plLen=%u",
                              len, t1 - t0, pkt.senderId, pkt.receiverId,
                              pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
-                    fullLog = String(logBuffer) + ", pl=" + payloadHex;
+                    fullLog = String(s) + ", pl=" + payloadHex;
 
                     if (pkt.packetType == CMD_ACK)
                     {
@@ -327,9 +335,18 @@ private:
 
                 if (radioSemaphore)
                     xSemaphoreGive(radioSemaphore);
+                    
                 if (fullLog.length() > 0)
                 {
-                    LLog(fullLog);
+                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+                    {
+                        logBuffer.push_back(fullLog);
+                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                        {
+                            logBuffer.erase(logBuffer.begin());
+                        }
+                        xSemaphoreGive(logMutex);
+                    }
                 }
             }
             vTaskDelay(pdMS_TO_TICKS(2));
@@ -339,19 +356,42 @@ private:
     void sendTask()
     {
         static LoRaPacket pkt;
-        static char logBuffer[200];
+        static char s[200];
 
         while (true)
         {
-            if (xQueueReceive(outgoingQueue, &pkt, portMAX_DELAY) == pdTRUE)
+            // Ждём пакет с разумным таймаутом вместо вечного ожидания
+            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(1000)) == pdTRUE)
             {
                 if (radioSemaphore)
                     xSemaphoreTake(radioSemaphore, portMAX_DELAY);
+                    
                 radio.standby();
                 ssize_t len = offsetof(LoRaPacket, payload) + pkt.payloadLen;
                 unsigned long t0 = millis();
-                radio.transmit((uint8_t *)&pkt, len);
+                
+                // Передача может занять много времени на медленных настройках
+                int result = radio.transmit((uint8_t *)&pkt, len);
                 unsigned long txDuration = millis() - t0;
+                
+                // Логируем проблемы с передачей
+                if (result != RADIOLIB_ERR_NONE)
+                {
+                    snprintf(s, sizeof(s), 
+                             "❌TX Error: code=%d, id=%u, len=%d, duration=%lums", 
+                             result, pkt.packetId, (int)len, txDuration);
+                    
+                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+                    {
+                        logBuffer.push_back(String(s));
+                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                        {
+                            logBuffer.erase(logBuffer.begin());
+                        }
+                        xSemaphoreGive(logMutex);
+                    }
+                }
+                
                 radio.startReceive();
                 if (radioSemaphore)
                     xSemaphoreGive(radioSemaphore);
@@ -366,20 +406,31 @@ private:
                 if (pkt.payloadLen > 16)
                     payloadHex += "...";
 
-                snprintf(logBuffer, sizeof(logBuffer),
-                         "[LEN %d]TX %lums→[%u->%u], T=[%02X/%u], id=%u, plLen=%u",
+                snprintf(s, sizeof(s),
+                         "[LEN %d]TX %lums→[%u->%u], T=[%02X/%u], id=%u, plLen=%u%s",
                          (int)len, txDuration, pkt.senderId, pkt.receiverId,
-                         pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
-                String fullLog = String(logBuffer) + ", pl=" + payloadHex;
-                LLog(fullLog);
+                         pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen,
+                         txDuration > 1000 ? " ⚠️SLOW" : "");
+                String fullLog = String(s) + ", pl=" + payloadHex;
+                
+                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+                {
+                    logBuffer.push_back(fullLog);
+                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                    {
+                        logBuffer.erase(logBuffer.begin());
+                    }
+                    xSemaphoreGive(logMutex);
+                }
             }
+            // Небольшая задержка для предотвращения чрезмерного потребления CPU
             vTaskDelay(pdMS_TO_TICKS(10));
         }
     }
 
     void resendTask()
     {
-        static char logBuffer[120];
+        static char s[120];
 
         while (true)
         {
@@ -394,22 +445,58 @@ private:
                     {
                         if (it->retries < MAX_RETRIES)
                         {
-                            if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(10)) == pdTRUE)
+                            // Увеличиваем таймаут для повторной отправки до 100мс
+                            if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(100)) == pdTRUE)
                             {
                                 it->timestamp = now;
                                 it->retries++;
 
-                                snprintf(logBuffer, sizeof(logBuffer), "🔄Retry: id=%u #%u, T=%02X, to=%u",
+                                snprintf(s, sizeof(s), "🔄Retry: id=%u #%u, T=%02X, to=%u",
                                          it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.receiverId);
-                                LLog(String(logBuffer));
+                                
+                                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+                                {
+                                    logBuffer.push_back(String(s));
+                                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                                    {
+                                        logBuffer.erase(logBuffer.begin());
+                                    }
+                                    xSemaphoreGive(logMutex);
+                                }
+                                ++it;
                             }
-                            ++it;
+                            else
+                            {
+                                // Если очередь заполнена, попробуем позже
+                                snprintf(s, sizeof(s), "⏳Queue full: id=%u retry #%u delayed",
+                                         it->pkt.packetId, it->retries + 1);
+                                
+                                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+                                {
+                                    logBuffer.push_back(String(s));
+                                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                                    {
+                                        logBuffer.erase(logBuffer.begin());
+                                    }
+                                    xSemaphoreGive(logMutex);
+                                }
+                                ++it;
+                            }
                         }
                         else
                         {
-                            snprintf(logBuffer, sizeof(logBuffer), "❌Drop: id=%u, T=%02X, to=%u (max retries)",
+                            snprintf(s, sizeof(s), "❌Drop: id=%u, T=%02X, to=%u (max retries)",
                                      it->pkt.packetId, it->pkt.packetType, it->pkt.receiverId);
-                            LLog(String(logBuffer));
+                            
+                            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+                            {
+                                logBuffer.push_back(String(s));
+                                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                                {
+                                    logBuffer.erase(logBuffer.begin());
+                                }
+                                xSemaphoreGive(logMutex);
+                            }
                             it = pending.erase(it);
                         }
                     }
@@ -510,9 +597,9 @@ public:
         radio.setDio1Action(onReceive);
         radio.startReceive();
 
-        // Initialize FreeRTOS components
-        incomingQueue = xQueueCreate(30, sizeof(LoRaPacket));
-        outgoingQueue = xQueueCreate(30, sizeof(LoRaPacket));
+        // Initialize FreeRTOS components - увеличиваем размер очереди для медленных передач
+        incomingQueue = xQueueCreate(50, sizeof(LoRaPacket));  // Увеличено с 30 до 50
+        outgoingQueue = xQueueCreate(20, sizeof(LoRaPacket));  // Уменьшено до 20 для контроля
         radioSemaphore = xSemaphoreCreateBinary();
         pendingMutex = xSemaphoreCreateMutex();
         logMutex = xSemaphoreCreateMutex();
@@ -598,7 +685,7 @@ public:
         }
         return ok;
     }
-
+    // Низкоуровневая отправка без ACK и повторов (для служебных пакетов)
     bool send(const LoRaPacket &pkt)
     {
         if (!outgoingQueue)
@@ -666,6 +753,34 @@ public:
                outgoingQueue != nullptr &&
                radioSemaphore != nullptr &&
                pendingMutex != nullptr;
+    }
+
+    // Диагностические методы для мониторинга очередей
+    size_t getIncomingQueueCount() const
+    {
+        return incomingQueue ? uxQueueMessagesWaiting(incomingQueue) : 0;
+    }
+
+    size_t getOutgoingQueueCount() const  
+    {
+        return outgoingQueue ? uxQueueMessagesWaiting(outgoingQueue) : 0;
+    }
+
+    size_t getIncomingQueueFree() const
+    {
+        return incomingQueue ? uxQueueSpacesAvailable(incomingQueue) : 0;
+    }
+
+    size_t getOutgoingQueueFree() const
+    {
+        return outgoingQueue ? uxQueueSpacesAvailable(outgoingQueue) : 0;
+    }
+
+    String getQueueStatus() const
+    {
+        return "TX:" + String(getOutgoingQueueCount()) + "/" + String(getOutgoingQueueCount() + getOutgoingQueueFree()) +
+               ", RX:" + String(getIncomingQueueCount()) + "/" + String(getIncomingQueueCount() + getIncomingQueueFree()) +
+               ", Pending:" + String(getPendingCount());
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

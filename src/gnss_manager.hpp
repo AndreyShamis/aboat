@@ -60,7 +60,10 @@ public:
         obj["sats"] = gnss.getSIV();
         obj["fix"] = gnss.getFixType() >= 3;
         obj["date"] = String(gnss.getYear()) + "-" + String(gnss.getMonth()) + "-" + String(gnss.getDay());
-        obj["time"] = String(gnss.getHour()) + ":" + String(gnss.getMinute()) + ":" + String(gnss.getSecond());
+        char timeBuffer[16];
+        snprintf(timeBuffer, sizeof(timeBuffer), "%02d:%02d:%02d.%03d", 
+                 gnss.getHour(), gnss.getMinute(), gnss.getSecond(), gnss.getMillisecond());
+        obj["time"] = String(timeBuffer);
     }
 
     String getStatusJson() {
@@ -150,10 +153,11 @@ public:
     // Get GPS time as string for logging
     String getTimeString() {
         if (hasValidTime()) {
-            char timeStr[32];
-            snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d UTC", 
+            char timeStr[36];
+            uint16_t milliseconds = gnss.getMillisecond();
+            snprintf(timeStr, sizeof(timeStr), "%04d-%02d-%02d %02d:%02d:%02d.%03d UTC", 
                      gnss.getYear(), gnss.getMonth(), gnss.getDay(),
-                     gnss.getHour(), gnss.getMinute(), gnss.getSecond());
+                     gnss.getHour(), gnss.getMinute(), gnss.getSecond(), milliseconds);
             return String(timeStr);
         }
         return "Invalid GPS time";

@@ -512,7 +512,44 @@ public:
                                     sendResponseToMissionControl(response);
                                });
 
-        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa), N (navigation), W (waypoints)");
+        // Time synchronization and management
+        parser.registerCommand("T", [this](const String &arg)
+                               {
+                                    String response = "T:";
+                                    if (arg == "S" || arg == "sync") {
+                                        if (gnss.isTimeUpdated()) {
+                                            gnss.syncSystemTimeFromGPS();
+                                            time_t now = time(nullptr);
+                                            addLog("🕒 GPS time sync forced: " + String(now));
+                                            response += "GPS time synced:" + String(now);
+                                        } else {
+                                            addLog("🕒 GPS time not available for sync");
+                                            response += "GPS time not available";
+                                        }
+                                    } else if (arg == "status" || arg.isEmpty()) {
+                                        time_t now = time(nullptr);
+                                        bool synced = (now > 1600000000);
+                                        String timeStr = this->timeStr();
+                                        String status = "Time:" + timeStr + 
+                                               ",Synced:" + String(synced ? "YES" : "NO") + 
+                                               ",GPS_Updated:" + String(gnss.isTimeUpdated() ? "YES" : "NO");
+                                        addLog("🕒 " + status);
+                                        response += status;
+                                    } else if (arg == "reset") {
+                                        // Reset system time to epoch (testing purposes)
+                                        struct timeval tv = {0, 0};
+                                        settimeofday(&tv, NULL);
+                                        addLog("🕒 System time reset");
+                                        response += "System time reset";
+                                    } else {
+                                        response += "Unknown time command:" + arg;
+                                    }
+                                    
+                                    // Send response back to MissionControl
+                                    sendResponseToMissionControl(response);
+                               });
+
+        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa), N (navigation), W (waypoints), T (time)");
 
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
@@ -558,6 +595,15 @@ public:
         // Инициализация мониторинга стека
         stackMonitor.autoRegisterTasks();
         addLog("Stack monitor initialized with " + String(stackMonitor.getTaskCount()) + " tasks");
+        
+        // Initial GPS time check and setup
+        addLog("🕒 Checking GPS time sync capability...");
+        if (gnss.isTimeUpdated()) {
+            gnss.syncSystemTimeFromGPS();
+            addLog("🕒 GPS time sync performed during setup");
+        } else {
+            addLog("🕒 GPS time not yet available, will sync when ready");
+        }
     }
 
     unsigned long lastSync = 0;
@@ -944,10 +990,20 @@ public:
         
         // Синхронизация при первом валидном значении GPS времени
         static unsigned long lastSync = 0;
-        if (gnss.isTimeUpdated() && millis() - lastSync > 160000)
-        {
+        static bool timeEverSynced = false;
+        
+        // Первая синхронизация - сразу при получении валидного GPS времени
+        if (gnss.isTimeUpdated() && !timeEverSynced) {
             gnss.syncSystemTimeFromGPS();
             lastSync = millis();
+            timeEverSynced = true;
+            addLog("🕒 Initial GPS time sync completed");
+        }
+        // Последующие синхронизации - каждые 160 секунд
+        else if (gnss.isTimeUpdated() && timeEverSynced && millis() - lastSync > 160000) {
+            gnss.syncSystemTimeFromGPS();
+            lastSync = millis();
+            addLog("🕒 GPS time re-sync completed");
         }
         // static unsigned long wakeStart = 0;
         // static bool firstRun = true;
@@ -1336,6 +1392,12 @@ public:
 
         JsonObject gnssObj = doc[F("gnss")].to<JsonObject>();
         gnss.toJson(gnssObj);
+        
+        // Add GPS time sync status
+        time_t currentTime = time(nullptr);
+        gnssObj[F("time_synced")] = (currentTime > 1600000000);
+        gnssObj[F("system_time")] = currentTime;
+        gnssObj[F("time_updated")] = gnss.isTimeUpdated();
 
         JsonObject motorObj = doc[F("motor")].to<JsonObject>();
         engine.toJSON(motorObj);
@@ -1860,6 +1922,16 @@ private:
             return;
         }
         
+        // Log GPS time sync status periodically
+        static unsigned long lastTimeSyncCheck = 0;
+        if (millis() - lastTimeSyncCheck > 30000) { // Every 30 seconds
+            time_t now = time(nullptr);
+            bool timeSynced = (now > 1600000000);
+            addLog("🕒 GPS Time Status: " + String(timeSynced ? "SYNCED" : "NOT_SYNCED") + 
+                   " (GPS updated: " + String(gnss.isTimeUpdated() ? "YES" : "NO") + ")");
+            lastTimeSyncCheck = millis();
+        }
+        
         // Use local variables sparingly to save stack
         float lat = gnss.getLatitude();
         float lon = gnss.getLongitude();
@@ -1889,16 +1961,26 @@ private:
     String timeStr()
     {
         time_t now = time(nullptr);
+        unsigned long currentMillis = millis();
+        uint16_t milliseconds = currentMillis % 1000;
+        
         if (now > 1600000000) // Check if time is valid (after 2020)
         {
             struct tm *t = localtime(&now);
-            char buf[9];
-            strftime(buf, sizeof buf, "%H:%M:%S", t);
-            return String(buf);
+            char buf[13];
+            strftime(buf, 9, "%H:%M:%S", t);
+            char fullBuf[13];
+            snprintf(fullBuf, sizeof(fullBuf), "%s.%03d", buf, milliseconds);
+            return String(fullBuf);
         }
         
-        // If system time is not synced, return default
-        return F("00:00:00");
+        // If system time is not synced, show millis with indicator
+        char defaultBuf[16];
+        snprintf(defaultBuf, sizeof(defaultBuf), "~%02lu:%02lu.%03d", 
+            (currentMillis / 60000) % 60, 
+            (currentMillis / 1000) % 60, 
+            milliseconds);
+        return String(defaultBuf);
     }
 
     // Helper functions for packet processing with minimal stack usage

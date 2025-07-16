@@ -564,11 +564,21 @@ private:
         if (now > 1600000000)
         {
             struct tm *t = localtime(&now);
+            unsigned long currentMillis = millis();
+            uint16_t milliseconds = currentMillis % 1000;
             char buf[9];
             strftime(buf, sizeof buf, "%H:%M:%S", t);
-            return String(buf);
+            char fullBuf[13];
+            snprintf(fullBuf, sizeof(fullBuf), "%s.%03d", buf, milliseconds);
+            return String(fullBuf);
         }
-        return F("00:00:00");
+        
+        // If system time is not synced, return default with millis
+        unsigned long currentMillis = millis();
+        uint16_t milliseconds = currentMillis % 1000;
+        char defaultBuf[13];
+        snprintf(defaultBuf, sizeof(defaultBuf), "00:00:00.%03d", milliseconds);
+        return String(defaultBuf);
     }
     // Assemble telemetry JSON fragments
     void processTelemetryFragment(const String &frag)
