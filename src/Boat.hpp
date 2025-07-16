@@ -37,10 +37,10 @@ using namespace ArduinoJson;
 // ============================================================================
 static constexpr unsigned long CHANNEL_PRINT_INTERVAL = 2000;
 static constexpr unsigned long CONTROL_INTERVAL = 100; // 10 Hz
-static constexpr unsigned long RSSI_REPORT_INTERVAL = 25000;
-static constexpr unsigned long PING_INTERVAL = 40000;
-static constexpr unsigned long ASA_TIMEOUT = 15000;
-static constexpr unsigned long ACTIVITY_TIMEOUT = 35000;
+static constexpr unsigned long RSSI_REPORT_INTERVAL = 27123;
+static constexpr unsigned long PING_INTERVAL = 40013;
+static constexpr unsigned long ASA_TIMEOUT = 15007;
+static constexpr unsigned long ACTIVITY_TIMEOUT = 35777;
 static constexpr unsigned long ADAPTIVE_SWITCH_INTERVAL = 25011;
 
 // ============================================================================
@@ -902,6 +902,33 @@ public:
 
         static unsigned long lastOilPumpUpdate = 0;
         static unsigned long VuPDATE = 0;
+        if (waitingForASAAck && millis() - asaProposalTime > ASA_TIMEOUT)
+        {
+            addLog("❌ ASA: Нет ACK от управления. Отклоняем переход.");
+            
+            // Удаляем ASA запрос из pending списка при таймауте
+            if (lastAsaRequestId != 0 && loraComm) {
+                if (loraComm->removePendingPacket(lastAsaRequestId)) {
+                    addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (timeout)");
+                }
+                lastAsaRequestId = 0;
+            }
+            
+            waitingForASAAck = false;
+        }
+        if (asaActive && millis() - lastPacketReceived > ACTIVITY_TIMEOUT)
+        {
+            addLog("⏳ ASA: Таймаут активности. Возврат к дефолтным LoRa-настройкам.");
+            restoreDefaultLoRaSettings();
+            asaActive = false;
+            PongRssi = 0;
+            missionCOntrolIsActivae = false;
+        }
+        if (missionCOntrolIsActivae)
+        {
+            adaptiveLoraUpdate();
+        }
+
 
         if (millis() - lastOilPumpUpdate >= BOAT_TMR_OIL_PUMP_UPDATE_TIME)
         {
@@ -945,32 +972,6 @@ public:
             lastPingSent = millis();
         }
 
-        if (waitingForASAAck && millis() - asaProposalTime > ASA_TIMEOUT)
-        {
-            addLog("❌ ASA: Нет ACK от управления. Отклоняем переход.");
-            
-            // Удаляем ASA запрос из pending списка при таймауте
-            if (lastAsaRequestId != 0 && loraComm) {
-                if (loraComm->removePendingPacket(lastAsaRequestId)) {
-                    addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (timeout)");
-                }
-                lastAsaRequestId = 0;
-            }
-            
-            waitingForASAAck = false;
-        }
-        if (asaActive && millis() - lastPacketReceived > ACTIVITY_TIMEOUT)
-        {
-            addLog("⏳ ASA: Таймаут активности. Возврат к дефолтным LoRa-настройкам.");
-            restoreDefaultLoRaSettings();
-            asaActive = false;
-            PongRssi = 0;
-            missionCOntrolIsActivae = false;
-        }
-        if (missionCOntrolIsActivae)
-        {
-            adaptiveLoraUpdate();
-        }
 
         // Синхронизация при первом валидном значении GPS времени
         static unsigned long lastSync = 0;
@@ -1116,7 +1117,7 @@ public:
         pkt.rawRssi = loraComm->getRadio().getRSSI();
         pkt.smoothedRssi = smoothedRssi;
 
-        loraComm->sendPacketBase(receiverId, pkt, reinterpret_cast<const uint8_t *>(&pkt) + sizeof(PacketBase));
+        loraComm->sendPacketBase(receiverId, pkt, reinterpret_cast<const uint8_t *>(&pkt) + sizeof(PacketBase), false);
         addLog("📡 Sent RSSI Report → ID " + String(receiverId) +
                " raw=" + String(pkt.rawRssi) + " smoothed=" + String(pkt.smoothedRssi));
     }

@@ -373,7 +373,7 @@ private:
                     xSemaphoreGive(logMutex);
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(100)); // Проверяем логи каждые 100мс
+            vTaskDelay(pdMS_TO_TICKS(50)); // Проверяем логи каждые 100мс
         }
     }
 
@@ -409,7 +409,7 @@ private:
                     }
 
                     String payloadHex = "";
-                    for (int i = 0; i < pkt.payloadLen && i < 16; i++)
+                    for (int i = 0; i < pkt.payloadLen; i++)
                     {
                         char hexByte[4];
                         snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
@@ -419,54 +419,21 @@ private:
                         payloadHex += "...";
 
                     snprintf(s, sizeof(s),
-                             "[LEN %d]RX %lums→[%u->%u], T=[%02X/%u], id=%u, plLen=%u",
+                             "[LEN %d]RX %lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u",
                              len, t1 - t0, pkt.senderId, pkt.receiverId,
                              pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                     fullLog = String(s) + ", pl=" + payloadHex;
 
                     if (pkt.packetType == CMD_ACK)
                     {
-                        // Логируем детектирование ACK пакетов
-                        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-                        {
-                            char debugLog[80];
-                            snprintf(debugLog, sizeof(debugLog), "🎯 CMD_ACK detected: from=%u to=%u id=%u", 
-                                     pkt.senderId, pkt.receiverId, pkt.packetId);
-                            logBuffer.push_back(String(debugLog));
-                            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-                            xSemaphoreGive(logMutex);
-                        }
                         handleAck(pkt);
                     }
                     else if (pkt.packetType == CMD_BULK_ACK)
                     {
-                        // Логируем детектирование BULK ACK пакетов
-                        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-                        {
-                            char debugLog[80];
-                            snprintf(debugLog, sizeof(debugLog), "🎯 CMD_BULK_ACK detected: from=%u to=%u id=%u payloadLen=%u", 
-                                     pkt.senderId, pkt.receiverId, pkt.packetId, pkt.payloadLen);
-                            logBuffer.push_back(String(debugLog));
-                            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-                            xSemaphoreGive(logMutex);
-                        }
                         handleBulkAck(pkt);
                     }
                     else
                     {
-                        // Логируем все неACK пакеты для ASA отладки
-                        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-                        {
-                            char debugLog[80];
-                            snprintf(debugLog, sizeof(debugLog), "📨 Non-ACK packet: type=0x%02X from=%u to=%u id=%u", 
-                                     pkt.packetType, pkt.senderId, pkt.receiverId, pkt.packetId);
-                            logBuffer.push_back(String(debugLog));
-                            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                            {
-                                logBuffer.erase(logBuffer.begin());
-                            }
-                            xSemaphoreGive(logMutex);
-                        }
                         xQueueSendToBack(incomingQueue, &pkt, 0);
                     }
                 }
@@ -524,7 +491,7 @@ private:
                              "❌TX Error: code=%d, id=%u, len=%d, duration=%lums", 
                              result, pkt.packetId, (int)len, txDuration);
                     
-                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE) // Уменьшен таймаут
+                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
                     {
                         logBuffer.push_back(String(s));
                         if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
@@ -539,37 +506,34 @@ private:
                 if (radioSemaphore)
                     xSemaphoreGive(radioSemaphore);
 
-                // Логируем только если передача > 50ms (критически медленная)
-                if (txDuration > 50)
+                String payloadHex = "";
+                for (int i = 0; i < pkt.payloadLen; i++) // Уменьшено с 16 до 8 байт
                 {
-                    String payloadHex = "";
-                    for (int i = 0; i < pkt.payloadLen && i < 8; i++) // Уменьшено с 16 до 8 байт
-                    {
-                        char hexByte[4];
-                        snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
-                        payloadHex += hexByte;
-                    }
-                    if (pkt.payloadLen > 8)
-                        payloadHex += "...";
-
-                    snprintf(s, sizeof(s),
-                             "[LEN %d]TX %lums→[%u->%u], T=[%02X/%u], id=%u, plLen=%u ⚠️SLOW",
-                             (int)len, txDuration, pkt.senderId, pkt.receiverId,
-                             pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
-                    String fullLog = String(s) + ", pl=" + payloadHex;
-                    
-                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
-                    {
-                        logBuffer.push_back(fullLog);
-                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                        {
-                            logBuffer.erase(logBuffer.begin());
-                        }
-                        xSemaphoreGive(logMutex);
-                    }
+                    char hexByte[4];
+                    snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
+                    payloadHex += hexByte;
                 }
+                if (pkt.payloadLen > 8)
+                    payloadHex += "...";
+
+                snprintf(s, sizeof(s),
+                            "[LEN %d]TX %lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u ",
+                            (int)len, pkt.senderId, pkt.receiverId,
+                            pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                String fullLog = String(s) + ", pl=" + payloadHex;
+                
+                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
+                {
+                    logBuffer.push_back(fullLog);
+                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+                    {
+                        logBuffer.erase(logBuffer.begin());
+                    }
+                    xSemaphoreGive(logMutex);
+                }
+
             }
-            uint32_t randomDelay = 2 + (esp_random() % 4); // 3-5 мс
+            uint32_t randomDelay = 1 + (esp_random() % 5); // 3-5 мс
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }

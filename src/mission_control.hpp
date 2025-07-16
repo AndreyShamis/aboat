@@ -741,15 +741,26 @@ private:
             // Ответим только на CMD_REQUEST_ASA
             if (hdr.packetType == CMD_REQUEST_ASA)
             {
-                addLog("3 [MC] ASA Response sent");
                 sendAsaResponse(loraComm, nextPacketId++, profileIndex, sender);
+                addLog("3 [MC] ASA Response sent");
                 vTaskDelay(pdMS_TO_TICKS(50)); 
             }
             else
             {
                 addLog("4 [MC] ASA Response received, applying profile index " + String(profileIndex));
             }
-            vTaskDelay(pdMS_TO_TICKS(200)); // Ждем, чтобы пакет ушел
+            if(loraComm->getOutgoingQueueCount() > 0) {
+                addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
+                vTaskDelay(pdMS_TO_TICKS(409)); // Ждем, чтобы пакет ушел
+            }
+            if(loraComm->getOutgoingQueueCount() > 0) {
+                addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
+                vTaskDelay(pdMS_TO_TICKS(209)); // Ждем, чтобы пакет ушел
+            }
+            if(loraComm->getOutgoingQueueCount() > 0) {
+                addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
+                vTaskDelay(pdMS_TO_TICKS(207)); // Ждем, чтобы пакет ушел
+            }
             applyProfile(profileIndex);
             break;
         }
