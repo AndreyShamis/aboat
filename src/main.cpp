@@ -27,7 +27,7 @@ MissionControl missionControl;
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(921600);
   Serial.println("\n\n\n");
   esp_log_level_set("*", ESP_LOG_VERBOSE);
 #ifdef ROLE_BOAT

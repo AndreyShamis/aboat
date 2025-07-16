@@ -577,7 +577,7 @@ public:
         static unsigned long lastSafetyCheck = 0;
         static unsigned long lastStackCheck = 0;
         
-        if (millis() - lastSafetyCheck >= 100) { // 10Hz для безопасности
+        if (millis() - lastSafetyCheck >= 3111) { // 10Hz для безопасности
             safetyMonitor.checkSystemHealth(temps, battery, lastPacketReceived);
             
             // Emergency shutdown if critical conditions are met
@@ -589,7 +589,7 @@ public:
         }
         
         // Stack monitoring - каждые 10 секунд
-        if (millis() - lastStackCheck >= 10000) {
+        if (millis() - lastStackCheck >= 60000) {
             stackMonitor.update();
             if (stackMonitor.hasCriticalStackUsage()) {
                 addLog("🚨 STACK WARNING: " + stackMonitor.getCriticalTasks());
@@ -1644,7 +1644,7 @@ public:
                 String payload = String(headerBuffer) + fragment;
                 
                 sendResponseFragment(payload, i, chunks);
-                vTaskDelay(pdMS_TO_TICKS(90));
+                vTaskDelay(pdMS_TO_TICKS(10));
             }
         }
     }

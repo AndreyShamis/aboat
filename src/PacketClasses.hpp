@@ -23,7 +23,7 @@ static uint16_t calcCRC16(const uint8_t *data, size_t len)
     return crc;
 }
 
-static constexpr size_t MAX_LORA_PAYLOAD = 40;
+static constexpr size_t MAX_LORA_PAYLOAD = 85;
 
 // ----------------- Максимальные константы -------------------
 static constexpr size_t MAX_ARGS = 6;                                             // до 6 аргументов в команде
@@ -41,7 +41,7 @@ struct LoRaPacket
     // uint16_t crc;
     uint8_t payload[MAX_LORA_PAYLOAD];
 };
-static_assert(sizeof(LoRaPacket) <= 64, "LoRaPacket слишком большой!");
+static_assert(sizeof(LoRaPacket) <= 150, "LoRaPacket слишком большой!");
 #pragma pack(pop)
 
 class PacketBase
