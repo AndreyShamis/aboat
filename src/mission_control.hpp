@@ -102,6 +102,9 @@ public:
                 sendHeartbeatPong();
             }
         }
+        
+        // Проверяем, не нужно ли отправить накопленные ACK
+        checkBulkAckTimeout();
     }
 
     // Send an arbitrary command string (e.g. “M:120”)
@@ -519,15 +522,20 @@ public:
             printProfileInfo();
         }
         else if (cmd == "demo") {
-            // Quick demo commands
-            addLog("[MC] 📋 Running demo commands...");
+            // Quick demo commands - оптимизированная версия
+            addLog("[MC] Processing command: demo");
+            addLog("[MC] Running demo commands...");
             requestFullDiagnostics();
-            vTaskDelay(pdMS_TO_TICKS(2000));
+            addLog("[MC] 🔧 Sent diagnostic command: D:full");
+            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
             requestLoRaStatus();
-            vTaskDelay(pdMS_TO_TICKS(2000));
+            addLog("[MC] 📡 Sent LoRa command: L:status");
+            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
             sendNavigationCommand("status");
-            vTaskDelay(pdMS_TO_TICKS(2000));
+            addLog("[MC] Sent navigation command: N:status");
+            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
             sendPingCommand();
+            addLog("[MC] Ping sent");
             addLog("[MC] ✅ Demo complete");
         }
         else if (cmd == "SCAN") {
@@ -536,8 +544,7 @@ public:
             scanSpectrumCSV();
         }
         else {
-            addLog("[MC] ❌ Unknown command: '" + cmd + "'");
-            addLog("[MC] 💡 Type 'HELP' or 'help' for available commands.");
+            addLog("[MC] ❌ Unknown command: '" + cmd + "' Type 'HELP' or 'help' for available commands.");
         }
     }
 
@@ -553,10 +560,16 @@ public:
 
 private:
     LoRaCore *loraComm;
-    uint8_t nextPacketId = 0;
+    PacketId_t nextPacketId = 0;
     unsigned long lastPingTime = 0;
     int currentProfileIndex = 0;
     unsigned long checkInterval = 35 * 1000;
+
+    // Система агрегированных ACK
+    PacketBulkAck pendingBulkAck;
+    unsigned long lastBulkAckTime = 0;
+    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 1000; // 1 секунда
+    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 500;  // Максимум 0.5 сек ожидания
 
     String timeStr() const
     {
@@ -673,6 +686,29 @@ private:
         addLog("profile:" + String(currentProfileIndex) + " .RSSI:" + String(rssi) + "dBm, SNR=" + String(snr, 1) + "dB");
         switch (hdr.packetType)
         {
+            case CMD_BULK_ACK:
+            {
+                // Обработка bulk ACK от лодки
+                if (hdr.payloadLen < sizeof(uint8_t)) {
+                    addLog("[MC] ⚠️ Invalid BULK ACK packet size");
+                    break;
+                }
+                
+                uint8_t count = buf[0];
+                if (count > 10 || hdr.payloadLen != sizeof(uint8_t) + (count * sizeof(PacketId_t))) {
+                    addLog("[MC] ⚠️ Invalid BULK ACK count: " + String(count));
+                    break;
+                }
+                
+                addLog("[MC] ✅ Received BULK ACK for " + String(count) + " packets");
+                for (uint8_t i = 0; i < count; i++) {
+                    PacketId_t ackedId;
+                    memcpy(&ackedId, &buf[1 + i * sizeof(PacketId_t)], sizeof(PacketId_t));
+                    addLog("[MC] 📨 Confirmed packet ID: " + String(ackedId));
+                }
+                break;
+            }
+            
             // case CMD_ACK:
             // {
             //     if (hdr.payloadLen != sizeof(uint16_t))
@@ -774,19 +810,10 @@ private:
             break;
         }
 
-        if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && hdr.packetType != CMD_REQUEST_ASA)
+        if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && hdr.packetType != CMD_REQUEST_ASA)
         {
-            PacketAck ackOut{};
-            ackOut.packetType = CMD_ACK;
-            ackOut.packetId = nextPacketId++;
-            ackOut.ackedId = hdr.packetId;
-            ackOut.payloadLen = sizeof(ackOut.ackedId);
-
-            uint8_t ackBuf[sizeof(ackOut.ackedId)];
-            memcpy(ackBuf, &ackOut.ackedId, sizeof(uint16_t));
-
-            loraComm->sendPacketBase(sender, ackOut, ackBuf, false);
-            addLog("[MC] 📨 Sent ACK for packet ID " + String(hdr.packetId));
+            // Используем новую систему bulk ACK вместо мгновенной отправки
+            addToBulkAck(hdr.packetId);
         }
     }
     // MissionControl.hpp
@@ -807,5 +834,63 @@ private:
         String cmdStr = "P:" + String(power);
         sendCommandString(cmdStr);
         addLog("[MC] 🛢️ Sent oil pump command: " + cmdStr + " (power: " + String(power) + "%)");
+    }
+
+    // Добавить ACK в bulk пакет
+    void addToBulkAck(PacketId_t packetId)
+    {
+        if (pendingBulkAck.addAck(packetId)) {
+            addLog("[MC] 📦 Added ACK for packet " + String(packetId) + " to bulk (" + String(pendingBulkAck.count) + "/10)");
+            
+            // Если пакет заполнен или прошло достаточно времени - отправляем
+            if (pendingBulkAck.isFull() || 
+                (millis() - lastBulkAckTime > BULK_ACK_MAX_WAIT_MS && !pendingBulkAck.isEmpty())) {
+                sendBulkAck();
+            }
+        } else {
+            // Пакет переполнен - отправляем текущий и начинаем новый
+            sendBulkAck();
+            pendingBulkAck.addAck(packetId);
+            addLog("[MC] 📦 Started new bulk ACK with packet " + String(packetId));
+        }
+    }
+    
+    // Отправить накопленные ACK
+    void sendBulkAck()
+    {
+        if (pendingBulkAck.isEmpty()) return;
+        
+        pendingBulkAck.packetId = nextPacketId++;
+        
+        // Формируем payload: count + массив ID
+        uint8_t payload[1 + 10 * sizeof(PacketId_t)];
+        payload[0] = pendingBulkAck.count;
+        memcpy(&payload[1], pendingBulkAck.ackedIds, pendingBulkAck.count * sizeof(PacketId_t));
+        
+        size_t payloadSize = sizeof(uint8_t) + (pendingBulkAck.count * sizeof(PacketId_t));
+        
+        // Отправляем как высокоприоритетный пакет
+        LoRaPacket bulkPacket;
+        packBaseIntoLoRa(bulkPacket, MY_DEVICE_ID, BOAT_DEVICE_ID, pendingBulkAck, payload);
+        
+        if (loraComm->sendHighPriority(bulkPacket)) {
+            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (high priority)");
+        } else {
+            // Если высокоприоритетная отправка не удалась, используем обычную
+            loraComm->sendPacketBase(BOAT_DEVICE_ID, pendingBulkAck, payload, false);
+            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (standard)");
+        }
+        
+        pendingBulkAck.clear();
+        lastBulkAckTime = millis();
+    }
+    
+    // Проверить, нужно ли отправить bulk ACK по таймауту
+    void checkBulkAckTimeout()
+    {
+        if (!pendingBulkAck.isEmpty() && 
+            (millis() - lastBulkAckTime > BULK_ACK_INTERVAL_MS)) {
+            sendBulkAck();
+        }
     }
 };

@@ -3,6 +3,9 @@
 #include <RadioLib.h>
 #define LORA_PROFILE_COUNT 13  // Расширено с 9 до 13 для поддержки GFSK
 
+// Унифицированный тип для всех packetId в системе
+typedef uint8_t PacketId_t;
+
 // Режимы радио
 enum class RadioProfileMode : uint8_t {
     LORA = 0,
@@ -29,10 +32,10 @@ static constexpr struct {
     {RadioProfileMode::LORA, 500.0,  8, 5, 0, 0},      // 7: Очень быстрый, LOS желательно
     {RadioProfileMode::LORA, 500.0,  7, 5, 0, 0},      // 8: 🚀 Максимальная скорость LoRa
     // GFSK профили (9-12): SX1262/RadioLib поддерживает GFSK, не классический FSK
-    {RadioProfileMode::FSK, 117.3, 0, 0, 9600, 5000},   // 9: 📡 GFSK стандартный (9.6k, dev=5k, rxBw=117.3k)
-    {RadioProfileMode::FSK, 156.2, 0, 0, 19200, 10000}, // 10: GFSK средний (19.2k, dev=10k, rxBw=156.2k) 
-    {RadioProfileMode::FSK, 187.2, 0, 0, 38400, 20000}, // 11: GFSK быстрый (38.4k, dev=20k, rxBw=187.2k)
-    {RadioProfileMode::FSK, 234.3, 0, 0, 50000, 25000}  // 12: 🚀 GFSK максимальный (50k, dev=25k, rxBw=234.3k)
+    {RadioProfileMode::FSK, 117.3, 0, 0, 19200, 10000}, // 9: 📡 GFSK стандартный (увеличена скорость)
+    {RadioProfileMode::FSK, 156.2, 0, 0, 38400, 20000}, // 10: GFSK средний  
+    {RadioProfileMode::FSK, 187.2, 0, 0, 50000, 25000}, // 11: GFSK быстрый 
+    {RadioProfileMode::FSK, 234.3, 0, 0, 100000, 50000} // 12: 🚀 GFSK максимальный (увеличена скорость)
 };
 
 // Расширенная таблица мэппинга: RSSI >= X → профиль Y (включая FSK)
@@ -79,6 +82,7 @@ enum CommandType : uint8_t
     CMD_GET_BOAT_STATUS = 'Q',    // Q = Query boat Status (запрос статуса)
     CMD_BOAT_STATUS_REPORT = 'D', // D = Data report (отчёт статуса)
     CMD_ACK = 'K',          // K = aCK (универсальное «ок»)
+    CMD_BULK_ACK = 'B',     // B = Bulk ACK (агрегированные подтверждения)
     CMD_REQUEST_INFO = 'W', // W = request any Info
     CMD_PING = '-',
     CMD_PONG = 'O',
@@ -199,8 +203,3 @@ enum CommandType : uint8_t
 #define NAV_WAYPOINT_TOLERANCE   10.0f  // m - Default waypoint reach tolerance
 #define NAV_APPROACH_DISTANCE    50.0f  // m - Distance to start slowing down
 
-// Enhanced LoRa settings
-#define LORA_ADAPTIVE_INTERVAL   25011  // ms - Adaptive switching interval
-#define LORA_ASA_TIMEOUT         15000  // ms - ASA acknowledgment timeout
-#define LORA_PING_INTERVAL       20000  // ms - Ping interval
-#define LORA_RSSI_REPORT_INTERVAL 35000 // ms - RSSI report interval

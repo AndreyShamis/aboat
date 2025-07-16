@@ -55,7 +55,7 @@ void setup()
 #elif defined(ROLE_MC)
   missionControl.begin();
   Serial.println("Mission Control System Starting...\n");
-  
+
   Serial.println("=== MISSION CONTROL READY ===");
   Serial.println("Available commands:");
   Serial.println("  D:S, D:P, D:T, D:full, D:ext - Diagnostics");

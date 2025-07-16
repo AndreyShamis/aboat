@@ -36,7 +36,7 @@ struct LoRaPacket
     uint8_t senderId;
     uint8_t receiverId;
     uint8_t packetType;
-    uint8_t packetId;
+    PacketId_t packetId;    // Унифицированный тип для ID пакета
     uint8_t payloadLen;
     // uint16_t crc;
     uint8_t payload[MAX_LORA_PAYLOAD];
@@ -48,7 +48,7 @@ class PacketBase
 {
 public:
     uint8_t packetType;     // 'C','T','I','S','A','G','H'=Heartbeat
-    uint8_t packetId;       // сквозной номер 0…255
+    PacketId_t packetId;    // сквозной номер 0…255 (унифицированный тип)
     uint8_t payloadLen = 0; // длина тела (без заголовка и CRC)
     String toString() const
     {
@@ -163,7 +163,38 @@ public:
 class PacketAck : public PacketBase
 {
 public:
-    uint16_t ackedId; // packetId того, что подтверждаем
+    PacketId_t ackedId; // packetId того, что подтверждаем (унифицированный тип)
+};
+
+// Агрегированное подтверждение (BULK ACK) - до 10 ACK в одном пакете
+class PacketBulkAck : public PacketBase
+{
+public:
+    uint8_t count;                          // количество ACK (1-10)
+    PacketId_t ackedIds[10];                // массив packetId для подтверждения (унифицированный тип)
+    
+    PacketBulkAck() : count(0) {
+        packetType = CMD_BULK_ACK;
+        payloadLen = sizeof(count);
+        for(int i = 0; i < 10; i++) ackedIds[i] = 0;
+    }
+    
+    bool addAck(PacketId_t packetId) {
+        if (count >= 10) return false;
+        ackedIds[count] = packetId;
+        count++;
+        payloadLen = sizeof(count) + (count * sizeof(PacketId_t));
+        return true;
+    }
+    
+    void clear() {
+        count = 0;
+        payloadLen = sizeof(count);
+        for(int i = 0; i < 10; i++) ackedIds[i] = 0;
+    }
+    
+    bool isFull() const { return count >= 10; }
+    bool isEmpty() const { return count == 0; }
 };
 
 // Конфиг-пакет (изменение параметра)

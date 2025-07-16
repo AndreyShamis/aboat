@@ -39,7 +39,7 @@ inline void sendAsaRequest(LoRaCore* loraCore, uint16_t packetId, uint8_t profil
     PacketAsaExchange pkt(CMD_REQUEST_ASA);
     pkt.packetId = packetId;
     pkt.setProfile(profileIndex);
-    loraCore->sendPacketBase(receiver, pkt, (const uint8_t*)&pkt.profileIndex, false);  // передаём payload
+    loraCore->sendPacketBase(receiver, pkt, (const uint8_t*)&pkt.profileIndex, true);  // waitForAck = true!
 }
 
 inline void sendAsaResponse(LoRaCore* loraCore, uint16_t packetId, uint8_t profileIndex, uint8_t receiver) {
