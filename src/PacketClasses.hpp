@@ -37,7 +37,7 @@ struct LoRaPacket
     uint8_t receiverId;
     uint8_t packetType;
     PacketId_t packetId;    // Унифицированный тип для ID пакета
-    uint8_t payloadLen;
+    uint8_t payloadLen = 0;
     // uint16_t crc;
     uint8_t payload[MAX_LORA_PAYLOAD];
 
@@ -59,13 +59,17 @@ public:
     uint8_t packetType;     // 'C','T','I','S','A','G','H'=Heartbeat
     PacketId_t packetId;    // сквозной номер 0…255 (унифицированный тип)
     uint8_t payloadLen = 0; // длина тела (без заголовка и CRC)
-    String toString() const
-    {
-        return "PacketBase[type=" + String((char)packetType) +
-               ", id=" + String(packetId) +
-               ", payloadLen=" + String(payloadLen) + "]";
-    }
+    
+    // Remove toString() method to prevent vtable pollution
+    // Use free function instead: PacketBaseToString(base)
 };
+
+// Free function for converting PacketBase to string (safer than member function)
+inline String PacketBaseToString(const PacketBase& base) {
+    return "PacketBase[type=" + String((char)base.packetType) +
+           ", id=" + String(base.packetId) +
+           ", payloadLen=" + String(base.payloadLen) + "]";
+}
 // static_assert(sizeof(PacketBase) == HEADER_SIZE, "PacketBase size");
 
 String LoRaPacketToStr(const LoRaPacket &pkt)
@@ -75,7 +79,11 @@ String LoRaPacketToStr(const LoRaPacket &pkt)
     s += "/" + String((int)pkt.packetType) + "], id=" + String(pkt.packetId);
     s += ", plLen=" + String(pkt.payloadLen);
     // s += ", crc=0x" + String(pkt.crc, HEX);
-    if (pkt.payloadLen > 0)
+    if (pkt.payloadLen > MAX_LORA_PAYLOAD)
+    {
+        s += ", pl=❌CORRUPTED_LEN=" + String(pkt.payloadLen);
+    }
+    else if (pkt.payloadLen > 0)
     {
         s += ", pl=";
         for (int i = 0; i < pkt.payloadLen && i < MAX_LORA_PAYLOAD; i++)

@@ -601,7 +601,7 @@ public:
             lastSafetyCheck = millis();
         }
 
-        // Stack monitoring - каждые 10 секунд
+
         if (millis() - lastStackCheck >= 60000)
         {
             stackMonitor.update();
@@ -612,23 +612,16 @@ public:
             lastStackCheck = millis();
         }
 
-        // Optimize sensor updates - разделяем по времени
-        updateSensorsOptimized();
-
-        // Process LoRa packets - вынесено в отдельную функцию
-        processLoRaPackets();
-
-        // Control and navigation updates
-        updateControlAndNavigation();
+        updateSensorsOptimized();       // Optimize sensor updates - разделяем по времени
+        processLoRaPackets();           // Process LoRa packets - вынесено в отдельную функцию
+        updateControlAndNavigation();   // Control and navigation updates
 
         static unsigned long lastOilPumpUpdate = 0;
         static unsigned long VuPDATE = 0;
         if (waitingForASAAck && millis() - asaProposalTime > ASA_TIMEOUT)
         {
             addLog("❌ ASA: Нет ACK от управления. Отклоняем переход.");
-            
-            // Удаляем ASA запрос из pending списка при таймауте
-            if (lastAsaRequestId != 0 && loraComm) {
+            if (lastAsaRequestId != 0 && loraComm) {// Удаляем ASA запрос из pending списка при таймауте
                 if (loraComm->removePendingPacket(lastAsaRequestId)) {
                     addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (timeout)");
                 }
@@ -839,7 +832,12 @@ public:
         pkt.rawRssi = loraComm->getRadio().getRSSI();
         pkt.smoothedRssi = smoothedRssi;
 
-        loraComm->sendPacketBase(receiverId, pkt, reinterpret_cast<const uint8_t *>(&pkt) + sizeof(PacketBase), false);
+        // Create a proper payload buffer instead of using reinterpret_cast
+        uint8_t payload[sizeof(float) * 2];
+        memcpy(payload, &pkt.rawRssi, sizeof(float));
+        memcpy(payload + sizeof(float), &pkt.smoothedRssi, sizeof(float));
+
+        loraComm->sendPacketBase(receiverId, pkt, payload, false);
         addLog("📡 Sent RSSI Report → ID " + String(receiverId) +
                " raw=" + String(pkt.rawRssi) + " smoothed=" + String(pkt.smoothedRssi));
     }
@@ -884,6 +882,12 @@ public:
             String modeStr = (currentMode == RadioMode::FSK) ? "GFSK" : "LoRa";
             addLog("📊 Fresh data: Mode=" + modeStr + ", RSSI=" + String(rssi, 2) + ", Raw SNR=" + String(snr, 2));
 
+            // Validate RSSI values - reject obviously incorrect readings
+            if (rssi < -130.0f || rssi > 0.0f) {
+                addLog("⚠️ Invalid RSSI value detected: " + String(rssi) + "dBm, using fallback");
+                rssi = sensorCache.isValid() ? sensorCache.lastRSSI : -90.0f;
+            }
+
             sensorCache.update(rssi, snr);
         }
 
@@ -914,10 +918,8 @@ public:
         }
 
         int bestIndex = loraComm->getCurrentProfileIndex();
-        if (PongRssi >= 0)
-        {
-            PongRssi = rssi;
-        }
+        // Always update PongRssi with current RSSI for profile selection
+        PongRssi = rssi;
 
         // Enhanced profile selection with SNR consideration
         bestIndex = selectOptimalProfile(PongRssi, snr);
@@ -988,6 +990,9 @@ public:
         // Используем новый метод LoRaCore для применения профилей из settings.h
         if (loraComm->applyProfileFromSettings(idx))
         {
+            // Force cache invalidation after profile change to get fresh RSSI/SNR
+            sensorCache.valid = false;
+            
             String modeStr = (profile.mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
 
             if (profile.mode == RadioProfileMode::LORA)
@@ -1644,7 +1649,7 @@ private:
         if (millis() - lastPacketCheck >= 10)
         { // 100Hz для LoRa
             // Use LoRaCore API instead of direct LoRaComm calls
-            LoRaPacket pkt;
+            LoRaPacket pkt = {}; // Explicitly initialize to zero
             if (loraComm->receive(pkt) && pkt.senderId != BOAT_DEVICE_ID)
             {
                 lastPacketReceived = millis();
@@ -1660,6 +1665,14 @@ private:
     {
         // Use minimal local variables to save stack
         uint8_t senderId = pkt.senderId;
+        
+        // Validate payload length first to prevent memory corruption
+        if (pkt.payloadLen > MAX_LORA_PAYLOAD) {
+            addLog("❌ Invalid packet: payload length " + String(pkt.payloadLen) + 
+                   " exceeds maximum " + String(MAX_LORA_PAYLOAD));
+            return;
+        }
+        
         PacketBase hdr;
         hdr.packetType = pkt.packetType;
         hdr.packetId = pkt.packetId;
@@ -1670,13 +1683,12 @@ private:
         float snr = loraComm->getRadio().getSNR();
         float rssi = loraComm->getRadio().getRSSI();
         
-        // Log packet info like in oldHandlePacket
+        // Log packet info like in oldHandlePacket with safe formatting
         char sd[256];
         snprintf(sd, sizeof(sd),
-                 "[P:%d][RSSI:%.2f/%.2fdBm,SNR=%.1fdB] T=%c from=%d id=%d P: %s",
+                 "[P:%d][RSSI:%.2f/%.2fdBm,SNR=%.1fdB] T=%c from=%d id=%d len=%d",
                  loraComm->getCurrentProfileIndex(), rssi, smoothedRssi, snr,
-                 (char)hdr.packetType, senderId, hdr.packetId,
-                 hdr.toString().c_str());
+                 (char)hdr.packetType, senderId, hdr.packetId, hdr.payloadLen);
         addLog(String(sd));
 
         // Handle MissionControl specific processing (like in oldHandlePacket)
@@ -1813,16 +1825,25 @@ private:
     // Helper functions for packet processing with minimal stack usage
     void processCommandPacket(const PacketBase &hdr, const uint8_t *buf, uint8_t senderId)
     {
+        // Validate payload length to prevent memory corruption
+        if (hdr.payloadLen > MAX_LORA_PAYLOAD) {
+            addLog("❌ Command packet: Invalid payload length " + String(hdr.payloadLen));
+            return;
+        }
+        
         PacketCommand cmd{};
         cmd.packetType = hdr.packetType;
         cmd.packetId = hdr.packetId;
         cmd.payloadLen = hdr.payloadLen;
-        memcpy(reinterpret_cast<uint8_t *>(&cmd) + sizeof(PacketBase), buf, hdr.payloadLen);
+        
+        // Safe copy with bounds checking
+        size_t copyLen = std::min<size_t>(hdr.payloadLen, MAX_LORA_PAYLOAD);
+        memcpy(reinterpret_cast<uint8_t *>(&cmd) + sizeof(PacketBase), buf, copyLen);
 
         // Convert to string with minimal stack usage (matching oldHandlePacket)
         String s;
-        s.reserve(hdr.payloadLen + 1);
-        for (size_t i = 0; i < cmd.payloadLen; ++i)
+        s.reserve(copyLen + 1);
+        for (size_t i = 0; i < copyLen; ++i)
         {
             s += char(buf[i]);
         }
@@ -1853,8 +1874,15 @@ private:
 
     void processGeneralPacket(const PacketBase &hdr, const uint8_t *buf, uint8_t senderId)
     {
+        // Validate payload length to prevent memory corruption
+        if (hdr.payloadLen > MAX_LORA_PAYLOAD) {
+            addLog("❌ General packet: Invalid payload length " + String(hdr.payloadLen));
+            return;
+        }
+        
         // This function handles non-critical packets with full processing
         // to match the complete functionality from oldHandlePacket
+        size_t safeLen = std::min<size_t>(hdr.payloadLen, MAX_LORA_PAYLOAD);
 
         switch (hdr.packetType)
         {
@@ -1867,7 +1895,7 @@ private:
             tel.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&tel) + sizeof(PacketBase),
                    buf,
-                   hdr.payloadLen);
+                   safeLen);
             onTelemetry(tel);
             break;
         }
@@ -1880,7 +1908,7 @@ private:
             info.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&info) + sizeof(PacketBase),
                    buf,
-                   hdr.payloadLen);
+                   safeLen);
             onInfoEngine(info);
             break;
         }
@@ -1893,7 +1921,7 @@ private:
             st.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&st) + sizeof(PacketBase),
                    buf,
-                   hdr.payloadLen);
+                   safeLen);
             onStatus(st);
             break;
         }
@@ -1906,7 +1934,7 @@ private:
             ackIn.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&ackIn) + sizeof(PacketBase),
                    buf,
-                   hdr.payloadLen);
+                   safeLen);
             onAck(ackIn);
             break;
         }
@@ -1919,7 +1947,7 @@ private:
             cfg.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&cfg) + sizeof(PacketBase),
                    buf,
-                   hdr.payloadLen);
+                   safeLen);
             onConfig(cfg);
             break;
         }
@@ -1932,7 +1960,7 @@ private:
             nav.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&nav) + sizeof(PacketBase),
                    buf,
-                   hdr.payloadLen);
+                   safeLen);
             onNav(nav);
             break;
         }
@@ -1945,7 +1973,7 @@ private:
             hb.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&hb) + sizeof(PacketBase),
                    buf,
-                   hdr.payloadLen);
+                   safeLen);
             onHeartbeat(hb);
             break;
         }

@@ -58,7 +58,7 @@ public:
         PacketBase hdr;
         uint8_t payloadBuf[MAX_LORA_PAYLOAD];
 
-        LoRaPacket pkt;
+        LoRaPacket pkt = {}; // Initialize to zero
 
         if (loraComm->receive(pkt))
         {
@@ -533,7 +533,7 @@ public:
             vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
             sendNavigationCommand("status");
             addLog("[MC] Sent navigation command: N:status");
-            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
+            vTaskDelay(pdMS_TO_TICKS(800)); // Уменьшено с 2000 до 500ms
             sendPingCommand();
             addLog("[MC] Ping sent");
             addLog("[MC] ✅ Demo complete");
@@ -741,25 +741,26 @@ private:
             // Ответим только на CMD_REQUEST_ASA
             if (hdr.packetType == CMD_REQUEST_ASA)
             {
+                vTaskDelay(pdMS_TO_TICKS(10)); 
                 sendAsaResponse(loraComm, nextPacketId++, profileIndex, sender);
                 addLog("3 [MC] ASA Response sent to LORA");
-                vTaskDelay(pdMS_TO_TICKS(250)); 
+                vTaskDelay(pdMS_TO_TICKS(450)); 
             }
             else
             {
                 addLog("4 [MC] ASA Response received, applying profile index " + String(profileIndex));
             }
-            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getIncomingQueueCount() > 0) {
-                addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
-                vTaskDelay(pdMS_TO_TICKS(201)); // Ждем, чтобы пакет ушел
+            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getPendingCount() > 0) {
+                addLog("[MC] Outgoing queue count or pending: " + String(loraComm->getOutgoingQueueCount()));
+                vTaskDelay(pdMS_TO_TICKS(401)); // Ждем, чтобы пакет ушел
             }
-            if(loraComm->getOutgoingQueueCount() > 0) {
-                addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
-                vTaskDelay(pdMS_TO_TICKS(209)); // Ждем, чтобы пакет ушел
+            if(loraComm->getPendingCount() > 0) {
+                addLog("[MC] Get Pending Count: " + String(loraComm->getPendingCount()));
+                vTaskDelay(pdMS_TO_TICKS(409)); // Ждем, чтобы пакет ушел
             }
-            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getIncomingQueueCount() > 0) {
-                addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
-                vTaskDelay(pdMS_TO_TICKS(207)); // Ждем, чтобы пакет ушел
+            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getPendingCount() > 0) {
+                addLog("[MC] Outgoing queue count or pending:" + String(loraComm->getOutgoingQueueCount()));
+                vTaskDelay(pdMS_TO_TICKS(607)); // Ждем, чтобы пакет ушел
             }
             applyProfile(profileIndex);
             break;
@@ -887,7 +888,7 @@ private:
         size_t payloadSize = sizeof(uint8_t) + (pendingBulkAck.count * sizeof(PacketId_t));
         
         // Отправляем как высокоприоритетный пакет
-        LoRaPacket bulkPacket;
+        LoRaPacket bulkPacket = {}; // Initialize to zero
         packBaseIntoLoRa(bulkPacket, MY_DEVICE_ID, BOAT_DEVICE_ID, pendingBulkAck, payload);
         
         if (loraComm->sendHighPriority(bulkPacket)) {

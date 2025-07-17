@@ -35,7 +35,7 @@ struct FSKProfile
 
 struct PendingSend
 {
-    LoRaPacket pkt;
+    LoRaPacket pkt = {}; // Initialize to zero
     uint32_t timestamp;
     uint8_t retries;
 };
@@ -51,10 +51,25 @@ inline void packBaseIntoLoRa(LoRaPacket &out, uint8_t senderId, uint8_t receiver
     out.receiverId = receiverId;
     out.packetType = base.packetType;
     out.packetId = base.packetId;
-    out.payloadLen = base.payloadLen;
-    if (base.payloadLen > 0 && payload != nullptr)
-    {
-        memcpy(out.payload, payload, base.payloadLen);
+    
+    // Debug: Log the input values to track corruption
+    char debugBuf[100];
+    snprintf(debugBuf, sizeof(debugBuf), "📦 packBase: type=%c, id=%u, payloadLen=%u", 
+             base.packetType, base.packetId, base.payloadLen);
+    Serial.println(debugBuf);
+    
+    // Safety check: prevent memory corruption from invalid payload length
+    if (base.payloadLen > MAX_LORA_PAYLOAD) {
+        out.payloadLen = 0; // Set to 0 to prevent further corruption
+        snprintf(debugBuf, sizeof(debugBuf), "❌ packBase: Invalid payloadLen=%u > MAX=%u", 
+                 base.payloadLen, MAX_LORA_PAYLOAD);
+        Serial.println(debugBuf);
+    } else {
+        out.payloadLen = base.payloadLen;
+        if (base.payloadLen > 0 && payload != nullptr)
+        {
+            memcpy(out.payload, payload, base.payloadLen);
+        }
     }
 }
 
@@ -414,12 +429,12 @@ private:
 
     void receiveTask()
     {
-        static LoRaPacket pkt;
-        static char s[200];
+        static char s[200]; // Keep static buffer for performance
         static String fullLog = "";
 
         while (true)
         {
+            LoRaPacket pkt = {}; // Create fresh packet each time - no static!
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // спим до события
 
             fullLog = "";
@@ -456,15 +471,20 @@ private:
             
 
                 String payloadHex = "";
-                int maxPayloadToShow = std::min((int)pkt.payloadLen, 32);
+                // Safety check to prevent corruption from invalid payload length
+                int safePayloadLen = (pkt.payloadLen > MAX_LORA_PAYLOAD) ? 0 : pkt.payloadLen;
+                int maxPayloadToShow = std::min(safePayloadLen, 32);
                 for (int i = 0; i < maxPayloadToShow; i++)
                 {
                     char hexByte[4];
                     snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
                     payloadHex += hexByte;
                 }
-                if (pkt.payloadLen > 16)
+                if (pkt.payloadLen > MAX_LORA_PAYLOAD) {
+                    payloadHex = "❌CORRUPTED_LEN=" + String(pkt.payloadLen);
+                } else if (pkt.payloadLen > 16) {
                     payloadHex += "...";
+                }
 
                 snprintf(s, sizeof(s), "[RX:%d][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u", getCurrentProfileIndex(), len, t1 - t0, pkt.senderId, pkt.receiverId, pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                 fullLog = String(s) + ", pl=" + payloadHex;
@@ -499,11 +519,11 @@ private:
 
     void sendTask()
     {
-        static LoRaPacket pkt;
-        static char s[200];
-
+        static char s[200]; // Keep static buffer for performance
+        
         while (true)
         {
+            LoRaPacket pkt = {}; // Create fresh packet each time - no static!
             // Уменьшаем таймаут ожидания для более быстрой обработки
             if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(25)) == pdTRUE)
             {
@@ -512,30 +532,48 @@ private:
 
                 radio.standby();
                 ssize_t len = offsetof(LoRaPacket, payload) + pkt.payloadLen;
-                unsigned long t0 = millis();
-                int result = radio.transmit((uint8_t *)&pkt, len); // Передача может занять много времени на медленных настройках
-                unsigned long txDuration = millis() - t0;
-                if (result != RADIOLIB_ERR_NONE) // Логируем только критические проблемы для ускорения
-                {
-                    snprintf(s, sizeof(s), "❌TX Error: code=%d, id=%u, len=%d, duration=%lums",result, pkt.packetId, (int)len, txDuration);
-                    putToLogBuffer(String(s));
-                }
-
-                radio.startReceive();
-                if (radioSemaphore)
-                    xSemaphoreGive(radioSemaphore);
-
+                
+                // Create a copy for transmission to prevent radio library from corrupting original
+                LoRaPacket txPkt = pkt;
+                
+                // Generate log BEFORE transmission using original packet
                 String payloadHex = "";
-                for (int i = 0; i < pkt.payloadLen; i++)
+                int safePayloadLen = (pkt.payloadLen > MAX_LORA_PAYLOAD) ? 0 : pkt.payloadLen;
+                for (int i = 0; i < safePayloadLen; i++)
                 {
                     char hexByte[4];
                     snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
                     payloadHex += hexByte;
                 }
+                if (pkt.payloadLen > MAX_LORA_PAYLOAD) {
+                    payloadHex = "❌CORRUPTED_LEN=" + String(pkt.payloadLen);
+                }
 
-                snprintf(s, sizeof(s),"[TX:%d][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u ", getCurrentProfileIndex() , (int)len, pkt.senderId, pkt.receiverId,pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                // Log packet details BEFORE transmission
+                snprintf(s, sizeof(s),"[TX:%d][L:%d]→[%u->%u], T=[%c/%d], id=%u, plLen=%u ", getCurrentProfileIndex(), (int)len, pkt.senderId, pkt.receiverId, pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                 String fullLog = String(s) + ", pl=" + payloadHex;
                 putToLogBuffer(fullLog);
+                
+                unsigned long t0 = millis();
+                int result = radio.transmit((uint8_t *)&txPkt, len); // Use copy for transmission
+                unsigned long txDuration = millis() - t0;
+                
+                if (result != RADIOLIB_ERR_NONE) // Логируем только критические проблемы для ускорения
+                {
+                    snprintf(s, sizeof(s), "❌TX Error: code=%d, id=%u, len=%d, duration=%lums", result, pkt.packetId, (int)len, txDuration);
+                    putToLogBuffer(String(s));
+                }
+                
+                // Debug: Check if original packet was corrupted by radio.transmit()
+                if (pkt.payloadLen != txPkt.payloadLen) {
+                    char corruptionBuf[100];
+                    snprintf(corruptionBuf, sizeof(corruptionBuf), "🚨 CORRUPTION: orig_len=%u, tx_len=%u", pkt.payloadLen, txPkt.payloadLen);
+                    Serial.println(corruptionBuf);
+                }
+
+                radio.startReceive();
+                if (radioSemaphore)
+                    xSemaphoreGive(radioSemaphore);
             }
             uint32_t randomDelay = 3 + (esp_random() % 5);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
@@ -792,7 +830,7 @@ public:
     {
         if (!outgoingQueue)
             return false;
-        LoRaPacket frame;
+        LoRaPacket frame = {}; // Initialize to zero
         packBaseIntoLoRa(frame, myDeviceId, receiverId, base, payload);
         bool ok = xQueueSendToBack(outgoingQueue, &frame, 0) == pdTRUE;
         if (ok && waitForAck)
@@ -815,7 +853,11 @@ public:
                 }
                 else
                 {
-                    pending.push_back({frame, millis(), 0});    // ID уникальный, добавляем в pending
+                    PendingSend pendingItem = {};
+                    pendingItem.pkt = frame;
+                    pendingItem.timestamp = millis();
+                    pendingItem.retries = 0;
+                    pending.push_back(pendingItem);    // ID уникальный, добавляем в pending
                 }
                 xSemaphoreGive(pendingMutex);
             }
