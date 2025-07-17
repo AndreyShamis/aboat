@@ -841,7 +841,7 @@ public:
                 break;
             }
 
-            if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG)
+            if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && hdr.packetType != CMD_RSSI_REPORT)
             {
                 // Используем новую систему bulk ACK вместо мгновенной отправки
                 addToBulkAck(hdr.packetId);

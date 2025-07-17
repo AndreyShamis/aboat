@@ -64,69 +64,54 @@ inline void packBaseIntoLoRa(LoRaPacket &out, uint8_t senderId, uint8_t receiver
 class LoRaCore
 {
 private:
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE MEMBERS
-    // ═══════════════════════════════════════════════════════════════════════════
     uint8_t myDeviceId;
     Module *_module;
     SX1262 radio;
     LogInterface *_log;
-
-    // FreeRTOS components
     QueueHandle_t incomingQueue = nullptr;
     QueueHandle_t outgoingQueue = nullptr;
     SemaphoreHandle_t radioSemaphore = nullptr;
-
-    // Retry mechanism
+    static TaskHandle_t receiverTaskHandle;
     std::vector<PendingSend> pending;
     SemaphoreHandle_t pendingMutex = nullptr; // Мьютекс для pending vector
-
-    // ACK callback mechanism
     std::function<void(PacketId_t, uint8_t, uint8_t)> ackCallback = nullptr; // callback(packetId, senderId, packetType)
-
-    // Log buffering system
     std::vector<String> logBuffer;
     SemaphoreHandle_t logMutex = nullptr;
     static const size_t MAX_LOG_BUFFER_SIZE = 30;
-    
-    // Адаптивные параметры повторной отправки (зависят от профиля)
     uint8_t currentMaxRetries = 2;
     uint32_t currentRetryTimeoutMs = 6200;
-    
-    // Базовые константы для расчета адаптивных параметров
-    static const uint32_t FAST_TX_THRESHOLD_MS = 100;   // Быстрая передача < 100мс
-    static const uint32_t SLOW_TX_THRESHOLD_MS = 1000;  // Медленная передача > 1сек
-    static const uint32_t QUEUE_FULL_RETRY_MS = 200;    // Повтор при заполненной очереди
-
-    // Mode & profiles
+    static const uint32_t FAST_TX_THRESHOLD_MS = 100;  // Быстрая передача < 100мс
+    static const uint32_t SLOW_TX_THRESHOLD_MS = 1000; // Медленная передача > 1сек
+    static const uint32_t QUEUE_FULL_RETRY_MS = 200;   // Повтор при заполненной очереди
     RadioMode _mode{RadioMode::LORA};
     bool _manual{false};
     LoRaProfile _loraLong;
     FSKProfile _fskFast;
-
-    // Runtime tracking
     int currentSF{LORA_SF};
     int currentCR{LORA_CODING_RATE};
     float currentBW{LORA_BANDWIDTH};
     float currentFreq{LORA_FREQUENCY};
     int8_t currentTX{LORA_TX_POWER};
-
-    // FSK runtime tracking
     uint32_t currentBitrate{0};
     uint32_t currentDeviation{0};
     uint8_t currentProfileIndex{0};
-
-    // Thresholds
     static constexpr float RSSI_ENTER_FSK = -85.0f;
     static constexpr float RSSI_LEAVE_FSK = -92.0f;
     static constexpr float SNR_ENTER_FSK = 8.0f;
 
-    // Static interrupt flag
-    static volatile bool packetReceivedFlag;
+    void putToLogBuffer(const String& msg)
+    {
+        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
+        {
+            logBuffer.push_back(msg);
+            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
+            {
+                logBuffer.erase(logBuffer.begin());
+            }
+            xSemaphoreGive(logMutex);
+        }
+    }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PRIVATE METHODS
-    // ═══════════════════════════════════════════════════════════════════════════
     void updateRetryParameters()
     {
         if (_mode == RadioMode::LORA)
@@ -134,75 +119,64 @@ private:
             // Для LoRa профилей рассчитываем время передачи на основе SF, BW, CR
             // Приблизительная формула времени передачи пакета в LoRa (в мс)
             float symbolTime = (1 << currentSF) / (currentBW * 1000); // время символа в секундах
-            float preambleTime = (8 + 4.25f) * symbolTime; // преамбула + sync
-            
+            float preambleTime = (8 + 4.25f) * symbolTime;            // преамбула + sync
+
             // Примерная длина пакета 50 байт (включая заголовки)
-            float payloadSymbols = 8.0f + std::max(ceil((8.0f * 50 - 4.0f * currentSF + 28 + 16) / 
-                                                  (4.0f * (currentSF - 2))), 0.0f) * currentCR;
+            float payloadSymbols = 8.0f + std::max(ceil((8.0f * 50 - 4.0f * currentSF + 28 + 16) /
+                                                        (4.0f * (currentSF - 2))),
+                                                   0.0f) *
+                                              currentCR;
             float packetTime = (preambleTime + payloadSymbols * symbolTime) * 1000; // в мс
-            
+
             // Адаптивный таймаут: 3-4 времени передачи пакета + буфер
             currentRetryTimeoutMs = std::max(1500U, (uint32_t)(packetTime * 3.5f + 500));
-            
-            // Количество повторов зависит от SF (чем выше SF, тем больше повторов)
-            if (currentSF <= 7) {
+            if (currentSF <= 7) // Количество повторов зависит от SF (чем выше SF, тем больше повторов)
+            {
                 currentMaxRetries = 2; // Быстрые профили
-            } else if (currentSF <= 9) {
-                currentMaxRetries = 3; // Средние профили  
-            } else {
+            }
+            else if (currentSF <= 9)
+            {
+                currentMaxRetries = 3; // Средние профили
+            }
+            else
+            {
                 currentMaxRetries = 4; // Медленные но надежные профили
             }
-            
-            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-            {
-                char s[120];
-                snprintf(s, sizeof(s), "📊 Adaptive LoRa retry: SF%d → timeout=%ums, retries=%u (pkt≈%.1fms)", 
-                         currentSF, currentRetryTimeoutMs, currentMaxRetries, packetTime);
-                logBuffer.push_back(String(s));
-                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-                xSemaphoreGive(logMutex);
-            }
+
+            char s[120];
+            snprintf(s, sizeof(s), "📊 Adaptive LoRa retry: SF%d → timeout=%ums, retries=%u (pkt≈%.1fms)",
+                     currentSF, currentRetryTimeoutMs, currentMaxRetries, packetTime);
+            putToLogBuffer(String(s));
         }
         else if (_mode == RadioMode::FSK)
         {
-            // Для FSK/GFSK рассчитываем на основе битрейта
-            // Время передачи 50-байтового пакета при текущем битрейте
+            // Для FSK/GFSK рассчитываем на основе битрейта/ Время передачи 50-байтового пакета при текущем битрейте
             float packetTime = (50.0f * 8.0f * 1000.0f) / currentBitrate; // в мс
-            
-            // Адаптивный таймаут: 2-3 времени передачи + буфер  
-            currentRetryTimeoutMs = std::max(800U, (uint32_t)(packetTime * 2.5f + 300));
-            
-            // FSK быстрее, меньше повторов
-            if (currentBitrate >= 19200) {
+            currentRetryTimeoutMs = std::max(800U, (uint32_t)(packetTime * 2.5f + 300)); // Адаптивный таймаут: 2-3 времени передачи + буфер
+            if (currentBitrate >= 19200) // FSK быстрее, меньше повторов
+            {
                 currentMaxRetries = 2; // Высокоскоростные FSK
-            } else {
+            }
+            else
+            {
                 currentMaxRetries = 3; // Низкоскоростные FSK
             }
-            
-            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-            {
-                char s[120];
-                snprintf(s, sizeof(s), "📊 Adaptive FSK retry: %ukbps → timeout=%ums, retries=%u (pkt≈%.1fms)", 
-                         currentBitrate/1000, currentRetryTimeoutMs, currentMaxRetries, packetTime);
-                logBuffer.push_back(String(s));
-                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-                xSemaphoreGive(logMutex);
-            }
+
+            char s[120];
+            snprintf(s, sizeof(s), "📊 Adaptive FSK retry: %ukbps → timeout=%ums, retries=%u (pkt≈%.1fms)",
+                     currentBitrate / 1000, currentRetryTimeoutMs, currentMaxRetries, packetTime);
+            putToLogBuffer(String(s));
         }
     }
 
-    void LLog(const char* s)
+    void LLog(const char *s)
     {
-
-        // Fallback - прямой вывод если мьютекс недоступен
         if (_log)
             _log->addLog(String(s));
         else
             Serial.println(s);
-
     }
-    
-    // Перегрузка для String (для обратной совместимости)
+
     void LLog(const String &s)
     {
         LLog(s.c_str());
@@ -211,15 +185,16 @@ private:
     bool applyLoRa(const LoRaProfile &p)
     {
         bool success = radio.setModem(RADIOLIB_MODEM_LORA) == RADIOLIB_ERR_NONE &&
-                      radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
-                      radio.setSpreadingFactor(p.sf) == RADIOLIB_ERR_NONE &&
-                      radio.setCodingRate(p.cr) == RADIOLIB_ERR_NONE &&
-                      radio.setBandwidth(p.bw) == RADIOLIB_ERR_NONE &&
-                      radio.setPreambleLength(8) == RADIOLIB_ERR_NONE &&
-                      radio.setCRC(true) == RADIOLIB_ERR_NONE &&
-                      radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE;
-        
-        if (success) {
+                       radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
+                       radio.setSpreadingFactor(p.sf) == RADIOLIB_ERR_NONE &&
+                       radio.setCodingRate(p.cr) == RADIOLIB_ERR_NONE &&
+                       radio.setBandwidth(p.bw) == RADIOLIB_ERR_NONE &&
+                       radio.setPreambleLength(8) == RADIOLIB_ERR_NONE &&
+                       radio.setCRC(true) == RADIOLIB_ERR_NONE &&
+                       radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE;
+
+        if (success)
+        {
             currentSF = p.sf;
             currentCR = p.cr;
             currentBW = p.bw;
@@ -230,20 +205,17 @@ private:
 
     bool applyFSK(const FSKProfile &p)
     {
-        // Для SX1262 используем beginFSK() - это GFSK модуляция
-        // Параметры: bitrate (kbps), freqDev (kHz), rxBw (kHz), preambleLength
-        int result = radio.beginFSK(p.bitrate / 1000.0f, p.deviation / 1000.0f,
-                                    p.rxBw / 1000.0f, 4);
+        // Для SX1262 используем beginFSK() - это GFSK модуляция / Параметры: bitrate (kbps), freqDev (kHz), rxBw (kHz), preambleLength
+        int result = radio.beginFSK(p.bitrate / 1000.0f, p.deviation / 1000.0f, p.rxBw / 1000.0f, 4);
         if (result != RADIOLIB_ERR_NONE)
         {
             return false;
         }
-
-        // Включаем CRC и обновляем текущие параметры
-        bool success = radio.setCRC(true) == RADIOLIB_ERR_NONE;
-        if (success) {
+        bool success = radio.setCRC(true) == RADIOLIB_ERR_NONE; // Включаем CRC и обновляем текущие параметры
+        if (success)
+        {
             currentBitrate = p.bitrate;
-            currentDeviation = p.deviation; 
+            currentDeviation = p.deviation;
             currentBW = p.rxBw;
             updateRetryParameters(); // Обновляем адаптивные параметры
         }
@@ -269,29 +241,17 @@ private:
     {
         if (pkt.payloadLen != sizeof(PacketId_t))
         {
-            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-            {
-                char s[80];
-                snprintf(s, sizeof(s), "❌ Invalid ACK payload len: %u (expected %u)", 
-                         pkt.payloadLen, sizeof(PacketId_t));
-                logBuffer.push_back(String(s));
-                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-                xSemaphoreGive(logMutex);
-            }
+            char s[80];
+            snprintf(s, sizeof(s), "❌ Invalid ACK payload len: %u (expected %u)", pkt.payloadLen, sizeof(PacketId_t));
+            putToLogBuffer(String(s));
             return;
         }
         PacketId_t ackedId;
         memcpy(&ackedId, pkt.payload, sizeof(ackedId));
-        
-        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-        {
-            char s[80];
-            snprintf(s, sizeof(s), "📩 Single ACK received: id=%u from device %u", ackedId, pkt.senderId);
-            logBuffer.push_back(String(s));
-            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-            xSemaphoreGive(logMutex);
-        }
-        
+        char s[80];
+        snprintf(s, sizeof(s), "📩 Single ACK received: id=%u from device %u", ackedId, pkt.senderId);
+        putToLogBuffer(String(s));
+
         handleSingleAck(ackedId, pkt.senderId, pkt.packetType);
     }
 
@@ -299,88 +259,70 @@ private:
     {
         if (pkt.payloadLen < sizeof(uint8_t))
         {
-            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-            {
-                logBuffer.push_back(String("❌ BULK ACK: Invalid payload length"));
-                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-                xSemaphoreGive(logMutex);
-            }
+            putToLogBuffer(String("❌ BULK ACK: Invalid payload length"));
             return;
         }
-        
+
         uint8_t count = pkt.payload[0];
-        
+
         if (count > 10 || pkt.payloadLen != sizeof(uint8_t) + (count * sizeof(PacketId_t)))
         {
-            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-            {
-                char errorLog[120];
-                snprintf(errorLog, sizeof(errorLog), "❌ BULK ACK: Invalid count=%u or length mismatch", count);
-                logBuffer.push_back(String(errorLog));
-                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-                xSemaphoreGive(logMutex);
-            }
+            char errorLog[120];
+            snprintf(errorLog, sizeof(errorLog), "❌ BULK ACK: Invalid count=%u or length mismatch", count);
+            putToLogBuffer(String(errorLog));
             return;
         }
-        
+
         PacketId_t ackedIds[10];
         memcpy(ackedIds, &pkt.payload[1], count * sizeof(PacketId_t));
-        
-        // Фильтруем дублированные ID и подсчитываем уникальные
         PacketId_t uniqueIds[10];
         uint8_t uniqueCount = 0;
-        
-        for (uint8_t i = 0; i < count; i++) {
+
+        for (uint8_t i = 0; i < count; i++)
+        {
             bool isDuplicate = false;
-            // Проверяем, есть ли уже такой ID в списке уникальных
-            for (uint8_t j = 0; j < uniqueCount; j++) {
-                if (uniqueIds[j] == ackedIds[i]) {
+            for (uint8_t j = 0; j < uniqueCount; j++)            // Проверяем, есть ли уже такой ID в списке уникальных
+            {
+                if (uniqueIds[j] == ackedIds[i])
+                {
                     isDuplicate = true;
                     break;
                 }
             }
-            // Если ID уникальный, добавляем его в список
-            if (!isDuplicate && uniqueCount < 10) {
+            if (!isDuplicate && uniqueCount < 10)// Если ID уникальный, добавляем его в список
+            {
                 uniqueIds[uniqueCount] = ackedIds[i];
                 uniqueCount++;
             }
         }
-        
-        // Логируем результат с информацией о дубликатах
-        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
+        String idList = ""; // Логируем результат с информацией о дубликатах
+        String uniqueIdList = "";
+        for (uint8_t i = 0; i < count; i++)// Список всех полученных ID
         {
-            String idList = "";
-            String uniqueIdList = "";
-            
-            // Список всех полученных ID
-            for (uint8_t i = 0; i < count; i++) {
-                if (i > 0) idList += ",";
-                idList += String(ackedIds[i]);
-            }
-            
-            // Список уникальных ID  
-            for (uint8_t i = 0; i < uniqueCount; i++) {
-                if (i > 0) uniqueIdList += ",";
-                uniqueIdList += String(uniqueIds[i]);
-            }
-            
-            char successLog[200];
-            if (uniqueCount != count) {
-                snprintf(successLog, sizeof(successLog), 
-                         "📩 BULK ACK: %u IDs [%s] → %u unique [%s] from device %u (filtered %u duplicates)", 
-                         count, idList.c_str(), uniqueCount, uniqueIdList.c_str(), pkt.senderId, count - uniqueCount);
-            } else {
-                snprintf(successLog, sizeof(successLog), "📩 BULK ACK received: %u IDs [%s] from device %u", 
-                         count, idList.c_str(), pkt.senderId);
-            }
-            
-            logBuffer.push_back(String(successLog));
-            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE) logBuffer.erase(logBuffer.begin());
-            xSemaphoreGive(logMutex);
+            if (i > 0)
+                idList += ",";
+            idList += String(ackedIds[i]);
         }
-        
-        // Обрабатываем только уникальные ID
-        for (uint8_t i = 0; i < uniqueCount; i++) {
+        for (uint8_t i = 0; i < uniqueCount; i++) // Список уникальных ID
+        {
+            if (i > 0)
+                uniqueIdList += ",";
+            uniqueIdList += String(uniqueIds[i]);
+        }
+
+        char successLog[200];
+        if (uniqueCount != count)
+        {
+            snprintf(successLog, sizeof(successLog), "📩 BULK ACK: %u IDs [%s] → %u unique [%s] from device %u (filtered %u duplicates)", count, idList.c_str(), uniqueCount, uniqueIdList.c_str(), pkt.senderId, count - uniqueCount);
+        }
+        else
+        {
+            snprintf(successLog, sizeof(successLog), "📩 BULK ACK received: %u IDs [%s] from device %u",  count, idList.c_str(), pkt.senderId);
+        }
+        putToLogBuffer(String(successLog));
+
+        for (uint8_t i = 0; i < uniqueCount; i++) // Обрабатываем только уникальные ID
+        {
             handleSingleAck(uniqueIds[i], pkt.senderId, pkt.packetType);
         }
     }
@@ -388,75 +330,35 @@ private:
 private:
     void handleSingleAck(PacketId_t ackedId, uint8_t senderId, uint8_t packetType)
     {
-        // Потокобезопасный доступ к pending
-        if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE)
+        if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE) // Потокобезопасный доступ к pending
         {
             auto it = std::find_if(pending.begin(), pending.end(), [ackedId](const PendingSend &p)
                                    { return p.pkt.packetId == ackedId; });
             if (it != pending.end())
             {
                 uint8_t originalPacketType = it->pkt.packetType;
-                
-                // Логируем подтверждение ACK
-                char s[100];
-                snprintf(s, sizeof(s), "✅ACK confirmed: id=%u, from=%u, type=%02X, origType=%02X",
-                         ackedId, senderId, packetType, originalPacketType);
-                
-                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
-                {
-                    logBuffer.push_back(String(s));
-                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                    {
-                        logBuffer.erase(logBuffer.begin());
-                    }
-                    xSemaphoreGive(logMutex);
-                }
-                
+                char s[100]; // Логируем подтверждение ACK
+                snprintf(s, sizeof(s), "✅ACK confirmed: id=%u, from=%u, type=%c, origType=%c",ackedId, senderId, packetType, originalPacketType);
+                putToLogBuffer(String(s));
                 pending.erase(it);
-                
-                // Вызываем callback если он установлен
-                if (ackCallback)
+                if (ackCallback) // Вызываем callback если он установлен
                 {
-                    // Логируем вызов callback для ASA отладки
-                    char callbackLog[120];
-                    snprintf(callbackLog, sizeof(callbackLog), "🔔 Calling ACK callback: id=%u, sender=%u, origType=0x%02X", 
-                             ackedId, senderId, originalPacketType);
-                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-                    {
-                        logBuffer.push_back(String(callbackLog));
-                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                        {
-                            logBuffer.erase(logBuffer.begin());
-                        }
-                        xSemaphoreGive(logMutex);
-                    }
-                    
+                    char callbackLog[120];  // Логируем вызов callback для ASA отладки
+                    snprintf(callbackLog, sizeof(callbackLog), "🔔 Calling ACK callback: id=%u, sender=%u, origType=%c", ackedId, senderId, originalPacketType);
+                    putToLogBuffer(String(callbackLog));
                     ackCallback(ackedId, senderId, originalPacketType);
                 }
             }
             else
             {
-                // Пакет с таким ID не найден в pending списке - возможно дублированный ACK
-                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-                {
-                    char s[80];
-                    snprintf(s, sizeof(s), "⚠️ Duplicate ACK ignored: id=%u from device %u (not in pending)", 
-                             ackedId, senderId);
-                    logBuffer.push_back(String(s));
-                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                    {
-                        logBuffer.erase(logBuffer.begin());
-                    }
-                    xSemaphoreGive(logMutex);
-                }
+                char s[80];// Пакет с таким ID не найден в pending списке - возможно дублированный ACK
+                snprintf(s, sizeof(s), "⚠️ Duplicate ACK ignored: id=%u from device %u (not in pending)", ackedId, senderId);
+                putToLogBuffer(String(s));
             }
             xSemaphoreGive(pendingMutex);
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // FREERTOS TASKS
-    // ═══════════════════════════════════════════════════════════════════════════
     static void logTaskWrapper(void *param)
     {
         static_cast<LoRaCore *>(param)->logTask();
@@ -485,13 +387,10 @@ private:
             {
                 if (!logBuffer.empty())
                 {
-                    // Копируем все логи для обработки
-                    std::vector<String> logsToProcess = logBuffer;
+                    std::vector<String> logsToProcess = logBuffer; // Копируем все логи для обработки
                     logBuffer.clear();
                     xSemaphoreGive(logMutex);
-
-                    // Обрабатываем логи вне критической секции
-                    for (const auto &logEntry : logsToProcess)
+                    for (const auto &logEntry : logsToProcess) // Обрабатываем логи вне критической секции
                     {
                         if (_log)
                         {
@@ -508,7 +407,8 @@ private:
                     xSemaphoreGive(logMutex);
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(50)); // Проверяем логи каждые 100мс
+            uint32_t randomDelay = 21 + (esp_random() % 29);
+            vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
 
@@ -520,155 +420,80 @@ private:
 
         while (true)
         {
-            if (packetReceivedFlag)
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // спим до события
+
+            fullLog = "";
+            if (radioSemaphore)
+                xSemaphoreTake(radioSemaphore, portMAX_DELAY);
+            unsigned long t0 = millis();
+            int len = radio.getPacketLength();
+
+            if (len > 0 && len <= sizeof(LoRaPacket))
             {
-                fullLog = "";
-                if (radioSemaphore)
-                    xSemaphoreTake(radioSemaphore, portMAX_DELAY);
-                packetReceivedFlag = false;
-                unsigned long t0 = millis();
-                int len = radio.getPacketLength();
-
-                if (len > 0 && len <= sizeof(LoRaPacket))
+                if (len < offsetof(LoRaPacket, payload))
                 {
-                    // Проверяем минимальную длину пакета (должна быть хотя бы размер заголовка)
-                    if (len < offsetof(LoRaPacket, payload)) {
-                        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-                        {
-                            char shortLog[80];
-                            snprintf(shortLog, sizeof(shortLog), "🚫 PACKET TOO SHORT: len=%d < header_size=%d", 
-                                     len, (int)offsetof(LoRaPacket, payload));
-                            logBuffer.push_back(String(shortLog));
-                            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                            {
-                                logBuffer.erase(logBuffer.begin());
-                            }
-                            xSemaphoreGive(logMutex);
-                        }
-                        radio.startReceive();
-                        if (radioSemaphore)
-                            xSemaphoreGive(radioSemaphore);
-                        continue;
-                    }
-                    
-                    memset(&pkt, 0, sizeof(pkt));
-                    radio.readData((uint8_t *)&pkt, len);
-                    unsigned long t1 = millis();
+                    char shortLog[80];
+                    snprintf(shortLog, sizeof(shortLog), "🚫 PACKET TOO SHORT: len=%d < header_size=%d", len, (int)offsetof(LoRaPacket, payload));
+                    putToLogBuffer(String(shortLog));
                     radio.startReceive();
+                    if (radioSemaphore)
+                        xSemaphoreGive(radioSemaphore);
+                    continue;
+                }
 
-                    // Валидация целостности пакета
-                    if (pkt.senderId == myDeviceId)
-                    {
-                        if (radioSemaphore)
-                            xSemaphoreGive(radioSemaphore);
-                        continue;
-                    }
-                    
-                    // Проверяем базовые ограничения пакета
-                    bool packetValid = true;
-                    String errorReason = "";
-                    
-                    // Проверка ID устройств (разумные диапазоны)
-                    if (pkt.senderId == 0 || pkt.senderId > 250) {
-                        packetValid = false;
-                        errorReason = "Invalid senderId=" + String(pkt.senderId);
-                    }
-                    else if (pkt.receiverId == 0 || pkt.receiverId > 250) {
-                        packetValid = false;
-                        errorReason = "Invalid receiverId=" + String(pkt.receiverId);
-                    }
-                    // Проверка длины payload
-                    else if (pkt.payloadLen > MAX_LORA_PAYLOAD) {
-                        packetValid = false;
-                        errorReason = "PayloadLen=" + String(pkt.payloadLen) + " > MAX=" + String(MAX_LORA_PAYLOAD);
-                    }
-                    // Проверка соответствия длины пакета и payload
-                    else if (len < (int)(offsetof(LoRaPacket, payload) + pkt.payloadLen)) {
-                        packetValid = false;
-                        errorReason = "PacketLen=" + String(len) + " < headerSize+" + String(pkt.payloadLen);
-                    }
-                    // Проверка типа пакета (должен быть печатным символом или известным кодом)
-                    else if (pkt.packetType < 0x20 && pkt.packetType != CMD_ACK && 
-                             pkt.packetType != CMD_BULK_ACK && pkt.packetType != CMD_REQUEST_ASA && 
-                             pkt.packetType != CMD_REPOSNCE_ASA) {
-                        packetValid = false;
-                        errorReason = "Invalid packetType=0x" + String(pkt.packetType, HEX);
-                    }
-                    
-                    if (!packetValid) {
-                        // Логируем поврежденный пакет
-                        if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
-                        {
-                            char corruptLog[150];
-                            snprintf(corruptLog, sizeof(corruptLog), 
-                                     "🚫 CORRUPT PACKET: len=%d, sender=%u, recv=%u, type=0x%02X, plLen=%u - %s", 
-                                     len, pkt.senderId, pkt.receiverId, pkt.packetType, pkt.payloadLen, errorReason.c_str());
-                            logBuffer.push_back(String(corruptLog));
-                            if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                            {
-                                logBuffer.erase(logBuffer.begin());
-                            }
-                            xSemaphoreGive(logMutex);
-                        }
-                        
-                        if (radioSemaphore)
-                            xSemaphoreGive(radioSemaphore);
-                        continue; // Пропускаем поврежденный пакет
-                    }
+                memset(&pkt, 0, sizeof(pkt));
+                radio.readData((uint8_t *)&pkt, len);
+                unsigned long t1 = millis();
+                radio.startReceive();
 
-                    String payloadHex = "";
-                    int maxPayloadToShow = std::min((int)pkt.payloadLen, 16); // Ограничиваем до 16 байт для логов
-                    for (int i = 0; i < maxPayloadToShow; i++)
-                    {
-                        char hexByte[4];
-                        snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
-                        payloadHex += hexByte;
-                    }
-                    if (pkt.payloadLen > 16)
-                        payloadHex += "...";
+                // Валидация целостности пакета
+                if (pkt.senderId == myDeviceId)
+                {
+                    if (radioSemaphore)
+                        xSemaphoreGive(radioSemaphore);
+                    continue;
+                }
+            
 
-                    snprintf(s, sizeof(s),
-                             "[LEN %d]RX %lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u",
-                             len, t1 - t0, pkt.senderId, pkt.receiverId,
-                             pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
-                    fullLog = String(s) + ", pl=" + payloadHex;
+                String payloadHex = "";
+                int maxPayloadToShow = std::min((int)pkt.payloadLen, 32);
+                for (int i = 0; i < maxPayloadToShow; i++)
+                {
+                    char hexByte[4];
+                    snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
+                    payloadHex += hexByte;
+                }
+                if (pkt.payloadLen > 16)
+                    payloadHex += "...";
 
-                    if (pkt.packetType == CMD_ACK)
-                    {
-                        handleAck(pkt);
-                    }
-                    else if (pkt.packetType == CMD_BULK_ACK)
-                    {
-                        handleBulkAck(pkt);
-                    }
-                    else
-                    {
-                        xQueueSendToBack(incomingQueue, &pkt, 0);
-                    }
+                snprintf(s, sizeof(s), "[RX:%d][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u", getCurrentProfileIndex(), len, t1 - t0, pkt.senderId, pkt.receiverId, pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                fullLog = String(s) + ", pl=" + payloadHex;
+
+                if (pkt.packetType == CMD_ACK)
+                {
+                    handleAck(pkt);
+                }
+                else if (pkt.packetType == CMD_BULK_ACK)
+                {
+                    handleBulkAck(pkt);
                 }
                 else
                 {
-                    radio.startReceive();
-                }
-
-                if (radioSemaphore)
-                    xSemaphoreGive(radioSemaphore);
-                    
-                if (fullLog.length() > 0)
-                {
-                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
-                    {
-                        logBuffer.push_back(fullLog);
-                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                        {
-                            logBuffer.erase(logBuffer.begin());
-                        }
-                        xSemaphoreGive(logMutex);
-                    }
+                    xQueueSendToBack(incomingQueue, &pkt, 0);
                 }
             }
-            uint32_t randomDelay = 1 + (esp_random() % 2);
-            vTaskDelay(pdMS_TO_TICKS(randomDelay));
+            else
+            {
+                radio.startReceive();
+            }
+
+            if (radioSemaphore)
+                xSemaphoreGive(radioSemaphore);
+
+            if (fullLog.length() > 0)
+            {
+                putToLogBuffer(fullLog);
+            }
         }
     }
 
@@ -680,69 +505,39 @@ private:
         while (true)
         {
             // Уменьшаем таймаут ожидания для более быстрой обработки
-            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(500)) == pdTRUE)
+            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(50)) == pdTRUE)
             {
                 if (radioSemaphore)
                     xSemaphoreTake(radioSemaphore, portMAX_DELAY);
-                    
+
                 radio.standby();
                 ssize_t len = offsetof(LoRaPacket, payload) + pkt.payloadLen;
                 unsigned long t0 = millis();
-                
-                // Передача может занять много времени на медленных настройках
-                int result = radio.transmit((uint8_t *)&pkt, len);
+                int result = radio.transmit((uint8_t *)&pkt, len); // Передача может занять много времени на медленных настройках
                 unsigned long txDuration = millis() - t0;
-                
-                // Логируем только критические проблемы для ускорения
-                if (result != RADIOLIB_ERR_NONE)
+                if (result != RADIOLIB_ERR_NONE) // Логируем только критические проблемы для ускорения
                 {
-                    snprintf(s, sizeof(s), 
-                             "❌TX Error: code=%d, id=%u, len=%d, duration=%lums", 
-                             result, pkt.packetId, (int)len, txDuration);
-                    
-                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
-                    {
-                        logBuffer.push_back(String(s));
-                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                        {
-                            logBuffer.erase(logBuffer.begin());
-                        }
-                        xSemaphoreGive(logMutex);
-                    }
+                    snprintf(s, sizeof(s), "❌TX Error: code=%d, id=%u, len=%d, duration=%lums",result, pkt.packetId, (int)len, txDuration);
+                    putToLogBuffer(String(s));
                 }
-                
+
                 radio.startReceive();
                 if (radioSemaphore)
                     xSemaphoreGive(radioSemaphore);
 
                 String payloadHex = "";
-                for (int i = 0; i < pkt.payloadLen; i++) // Уменьшено с 16 до 8 байт
+                for (int i = 0; i < pkt.payloadLen; i++)
                 {
                     char hexByte[4];
                     snprintf(hexByte, sizeof(hexByte), "%02X ", pkt.payload[i]);
                     payloadHex += hexByte;
                 }
-                if (pkt.payloadLen > 8)
-                    payloadHex += "...";
 
-                snprintf(s, sizeof(s),
-                            "[LEN %d]TX %lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u ",
-                            (int)len, pkt.senderId, pkt.receiverId,
-                            pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                snprintf(s, sizeof(s),"[TX:%c][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u ",getCurrentProfileIndex(), (int)len, pkt.senderId, pkt.receiverId,pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                 String fullLog = String(s) + ", pl=" + payloadHex;
-                
-                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
-                {
-                    logBuffer.push_back(fullLog);
-                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                    {
-                        logBuffer.erase(logBuffer.begin());
-                    }
-                    xSemaphoreGive(logMutex);
-                }
-
+                putToLogBuffer(fullLog);
             }
-            uint32_t randomDelay = 1 + (esp_random() % 5); // 3-5 мс
+            uint32_t randomDelay = 3 + (esp_random() % 7); // 3-5 мс
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
@@ -750,63 +545,37 @@ private:
     void resendTask()
     {
         static char s[120];
-
         while (true)
         {
             uint32_t now = millis();
-
-            // Потокобезопасный доступ к pending
-            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(50)) == pdTRUE) // Уменьшен таймаут
+            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(250)) == pdTRUE) // Потокобезопасный доступ к pending
             {
                 for (auto it = pending.begin(); it != pending.end();)
-                {                if (now - it->timestamp > currentRetryTimeoutMs)
                 {
-                    if (it->retries < currentMaxRetries)
+                    if (now - it->timestamp > currentRetryTimeoutMs)
                     {
-                            // Уменьшаем таймаут для повторной отправки до 50мс
-                            if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(50)) == pdTRUE)
+                        if (it->retries < currentMaxRetries)
+                        {
+                            if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(500)) == pdTRUE)
                             {
                                 it->timestamp = now;
                                 it->retries++;
-
-                                // Логируем только критические повторы
-                                if (it->retries >= currentMaxRetries - 1)
+                                if (it->retries >= currentMaxRetries - 1)// Логируем только критические повторы
                                 {
-                                    snprintf(s, sizeof(s), "🔄Retry: id=%u #%u, T=%02X, to=%u",
-                                             it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.receiverId);
-                                    
-                                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
-                                    {
-                                        logBuffer.push_back(String(s));
-                                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                                        {
-                                            logBuffer.erase(logBuffer.begin());
-                                        }
-                                        xSemaphoreGive(logMutex);
-                                    }
+                                    snprintf(s, sizeof(s), "🔄Retry: id=%u #%u, T=%c, to=%u", it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.receiverId);
+                                    putToLogBuffer(String(s));
                                 }
                                 ++it;
                             }
                             else
                             {
-                                // Если очередь заполнена, попробуем позже
-                                ++it;
+                                ++it;// Если очередь заполнена, попробуем позже
                             }
                         }
                         else
                         {
-                            snprintf(s, sizeof(s), "❌Drop: id=%u, T=%02X, to=%u (max retries)",
-                                     it->pkt.packetId, it->pkt.packetType, it->pkt.receiverId);
-                            
-                            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(5)) == pdTRUE)
-                            {
-                                logBuffer.push_back(String(s));
-                                if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                                {
-                                    logBuffer.erase(logBuffer.begin());
-                                }
-                                xSemaphoreGive(logMutex);
-                            }
+                            snprintf(s, sizeof(s), "❌Drop: id=%u, T=%c, to=%u (max retries)", it->pkt.packetId, it->pkt.packetType, it->pkt.receiverId);
+                            putToLogBuffer(String(s));
                             it = pending.erase(it);
                         }
                     }
@@ -817,7 +586,8 @@ private:
                 }
                 xSemaphoreGive(pendingMutex);
             }
-            vTaskDelay(pdMS_TO_TICKS(50)); // Уменьшено с 99ms до 50ms для более быстрой обработки
+            uint32_t randomDelay = 11 + (esp_random() % 37);
+            vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
 
@@ -827,12 +597,11 @@ public:
     // ═══════════════════════════════════════════════════════════════════════════
     static void onReceive()
     {
-        packetReceivedFlag = true;
+        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+        vTaskNotifyGiveFromISR(receiverTaskHandle, &xHigherPriorityTaskWoken);
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // CONSTRUCTOR / DESTRUCTOR
-    // ═══════════════════════════════════════════════════════════════════════════
     LoRaCore(uint8_t deviceId, LogInterface *logger = nullptr)
         : myDeviceId(deviceId),
           _module(new Module(LORA_SS, LORA_DIO1, LORA_RST, LORA_BUSY)),
@@ -843,7 +612,6 @@ public:
 
     ~LoRaCore()
     {
-        // Очистка FreeRTOS ресурсов
         if (incomingQueue)
         {
             vQueueDelete(incomingQueue);
@@ -868,9 +636,6 @@ public:
         delete _module;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
-    // PUBLIC INTERFACE
-    // ═══════════════════════════════════════════════════════════════════════════
     bool begin()
     {
         _loraLong.sf = LORA_SF;
@@ -884,9 +649,7 @@ public:
 
         // Initialize SPI
         SPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_SS);
-
-        // Software reset of LoRa module
-        digitalWrite(LORA_RST, LOW);
+        digitalWrite(LORA_RST, LOW);  // Software reset of LoRa module
         delay(5);
         digitalWrite(LORA_RST, HIGH);
         delay(2);
@@ -908,8 +671,8 @@ public:
         radio.startReceive();
 
         // Initialize FreeRTOS components - оптимизируем размеры очередей
-        incomingQueue = xQueueCreate(30, sizeof(LoRaPacket));  // Уменьшено с 50 до 30
-        outgoingQueue = xQueueCreate(15, sizeof(LoRaPacket));  // Уменьшено с 20 до 15 для быстрой обработки
+        incomingQueue = xQueueCreate(LORA_INCOMING_QUEUE_SIZE, sizeof(LoRaPacket));
+        outgoingQueue = xQueueCreate(LORA_OUTGOING_QUEUE_SIZE, sizeof(LoRaPacket));
         radioSemaphore = xSemaphoreCreateBinary();
         pendingMutex = xSemaphoreCreateMutex();
         logMutex = xSemaphoreCreateMutex();
@@ -924,7 +687,7 @@ public:
         xSemaphoreGive(radioSemaphore);
 
         // Create tasks
-        BaseType_t res1 = xTaskCreatePinnedToCore(receiveTaskWrapper, "LoRaRecv", 6144, this, 3, nullptr, 1);
+        BaseType_t res1 = xTaskCreatePinnedToCore(receiveTaskWrapper, "LoRaRecv", 6144, this, 3, &receiverTaskHandle, 1);
         BaseType_t res2 = xTaskCreatePinnedToCore(sendTaskWrapper, "LoRaSend", 6144, this, 2, nullptr, 1);
         BaseType_t res3 = xTaskCreatePinnedToCore(resendTaskWrapper, "LoRaRetry", 4096, this, 1, nullptr, 1);
         BaseType_t res4 = xTaskCreatePinnedToCore(logTaskWrapper, "LoRaLog", 3072, this, 1, nullptr, 0);
@@ -983,7 +746,7 @@ public:
         if (!outgoingQueue)
             return false;
         // Отправляем ACK пакеты в начало очереди с высоким приоритетом
-        return xQueueSendToFront(outgoingQueue, &pkt, pdMS_TO_TICKS(50)) == pdTRUE;
+        return xQueueSendToFront(outgoingQueue, &pkt, pdMS_TO_TICKS(20)) == pdTRUE;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1004,7 +767,7 @@ public:
     {
         if (!pendingMutex)
             return false;
-            
+
         bool removed = false;
         if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE)
         {
@@ -1013,19 +776,9 @@ public:
             if (it != pending.end())
             {
                 char s[100];
-                snprintf(s, sizeof(s), "🗑️ Manually removed pending packet: id=%u, type=0x%02X", 
-                         packetId, it->pkt.packetType);
-                         
-                if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(10)) == pdTRUE)
-                {
-                    logBuffer.push_back(String(s));
-                    if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                    {
-                        logBuffer.erase(logBuffer.begin());
-                    }
-                    xSemaphoreGive(logMutex);
-                }
-                
+                snprintf(s, sizeof(s), "🗑️ Manually removed pending packet: id=%u, type=%с", packetId, it->pkt.packetType);
+                putToLogBuffer(String(s));
+
                 pending.erase(it);
                 removed = true;
             }
@@ -1034,9 +787,7 @@ public:
         return removed;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // PACKET SENDING / RECEIVING
-    // ═══════════════════════════════════════════════════════════════════════════
     bool sendPacketBase(uint8_t receiverId, const PacketBase &base, const uint8_t *payload, bool waitForAck = true)
     {
         if (!outgoingQueue)
@@ -1050,32 +801,21 @@ public:
             if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE)
             {
                 // Проверяем, нет ли уже пакета с таким ID в pending списке
-                auto existingIt = std::find_if(pending.begin(), pending.end(), 
-                    [&frame](const PendingSend &p) { return p.pkt.packetId == frame.packetId; });
-                
+                auto existingIt = std::find_if(pending.begin(), pending.end(),
+                                               [&frame](const PendingSend &p)
+                                               { return p.pkt.packetId == frame.packetId; });
+
                 if (existingIt != pending.end())
                 {
-                    // Пакет с таким ID уже есть в pending - логируем предупреждение
-                    if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(2)) == pdTRUE)
-                    {
-                        char s[100];
-                        snprintf(s, sizeof(s), "⚠️ Duplicate packet ID detected: id=%u, type=0x%02X, to=%u", 
-                                 frame.packetId, frame.packetType, frame.receiverId);
-                        logBuffer.push_back(String(s));
-                        if (logBuffer.size() > MAX_LOG_BUFFER_SIZE)
-                        {
-                            logBuffer.erase(logBuffer.begin());
-                        }
-                        xSemaphoreGive(logMutex);
-                    }
-                    // Обновляем timestamp существующего пакета вместо добавления дубликата
-                    existingIt->timestamp = millis();
+                    char s[100];
+                    snprintf(s, sizeof(s), "⚠️ Duplicate packet ID detected: id=%u, type=%с, to=%u",frame.packetId, frame.packetType, frame.receiverId);
+                    putToLogBuffer(String(s));
+                    existingIt->timestamp = millis(); // Обновляем timestamp существующего пакета вместо добавления дубликата
                     existingIt->retries = 0;
                 }
                 else
                 {
-                    // ID уникальный, добавляем в pending
-                    pending.push_back({frame, millis(), 0});
+                    pending.push_back({frame, millis(), 0});    // ID уникальный, добавляем в pending
                 }
                 xSemaphoreGive(pendingMutex);
             }
@@ -1097,9 +837,7 @@ public:
         return xQueueReceive(incomingQueue, &pkt, 0) == pdTRUE;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // DIAGNOSTIC AND MAINTENANCE METHODS
-    // ═══════════════════════════════════════════════════════════════════════════
     size_t getPendingCount() const
     {
         if (!pendingMutex)
@@ -1146,10 +884,7 @@ public:
 
     bool isHealthy() const
     {
-        return incomingQueue != nullptr &&
-               outgoingQueue != nullptr &&
-               radioSemaphore != nullptr &&
-               pendingMutex != nullptr;
+        return incomingQueue != nullptr && outgoingQueue != nullptr && radioSemaphore != nullptr && pendingMutex != nullptr;
     }
 
     // Диагностические методы для мониторинга очередей
@@ -1158,7 +893,7 @@ public:
         return incomingQueue ? uxQueueMessagesWaiting(incomingQueue) : 0;
     }
 
-    size_t getOutgoingQueueCount() const  
+    size_t getOutgoingQueueCount() const
     {
         return outgoingQueue ? uxQueueMessagesWaiting(outgoingQueue) : 0;
     }
@@ -1175,29 +910,20 @@ public:
 
     String getQueueStatus() const
     {
-        return "TX:" + String(getOutgoingQueueCount()) + "/" + String(getOutgoingQueueCount() + getOutgoingQueueFree()) +
-               ", RX:" + String(getIncomingQueueCount()) + "/" + String(getIncomingQueueCount() + getIncomingQueueFree()) +
-               ", Pending:" + String(getPendingCount());
+        return "TX:" + String(getOutgoingQueueCount()) + "/" + String(getOutgoingQueueCount() + getOutgoingQueueFree()) + ", RX:" + String(getIncomingQueueCount()) + "/" + String(getIncomingQueueCount() + getIncomingQueueFree()) + ", Pending:" + String(getPendingCount());
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
     // ENHANCED PROFILE METHODS
-    // ═══════════════════════════════════════════════════════════════════════════
     bool applyProfileFromSettings(uint8_t profileIndex);
     String getCurrentProfileInfo() const;
     uint8_t getCurrentProfileIndex() const { return currentProfileIndex; }
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // ADAPTIVE RETRY PARAMETERS GETTERS
-    // ═══════════════════════════════════════════════════════════════════════════
     uint8_t getCurrentMaxRetries() const { return currentMaxRetries; }
     uint32_t getCurrentRetryTimeout() const { return currentRetryTimeoutMs; }
-    
+
     String getAdaptiveRetryInfo() const
     {
-        return "Retries:" + String(currentMaxRetries) + 
-               ", Timeout:" + String(currentRetryTimeoutMs) + "ms" +
-               " (" + ((_mode == RadioMode::LORA) ? "LoRa" : "FSK") + ")";
+        return "Retries:" + String(currentMaxRetries) + ", Timeout:" + String(currentRetryTimeoutMs) + "ms" + " (" + ((_mode == RadioMode::LORA) ? "LoRa" : "FSK") + ")";
     }
 
     // Диагностический метод для отображения текущих pending пакетов
@@ -1205,16 +931,19 @@ public:
     {
         if (!pendingMutex)
             return "No pending mutex";
-            
+
         String result = "";
         if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(50)) == pdTRUE)
         {
             result = "Pending(" + String(pending.size()) + "): ";
-            for (size_t i = 0; i < pending.size(); i++) {
-                if (i > 0) result += ", ";
+            for (size_t i = 0; i < pending.size(); i++)
+            {
+                if (i > 0)
+                    result += ", ";
                 result += String(pending[i].pkt.packetId) + "#" + String(pending[i].retries);
             }
-            if (pending.empty()) {
+            if (pending.empty())
+            {
                 result += "empty";
             }
             xSemaphoreGive(pendingMutex);
@@ -1226,17 +955,11 @@ public:
         return result;
     }
 
-    // ═══════════════════════════════════════════════════════════════════════════
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// STATIC MEMBER DEFINITION
-// ═══════════════════════════════════════════════════════════════════════════
-volatile bool LoRaCore::packetReceivedFlag = false;
+TaskHandle_t LoRaCore::receiverTaskHandle = nullptr;
 
-// ═══════════════════════════════════════════════════════════════════════════
 // ENHANCED PROFILE APPLICATION
-// ═══════════════════════════════════════════════════════════════════════════
 bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
 {
     if (profileIndex >= LORA_PROFILE_COUNT)
@@ -1251,21 +974,22 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
     {
         radio.standby();
 
-        bool success = false;
+        bool stat = false;
 
         if (profile.mode == RadioProfileMode::LORA)
         {
-            // Применяем LoRa профиль
-            success = radio.setModem(RADIOLIB_MODEM_LORA) == RADIOLIB_ERR_NONE &&
-                      radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
-                      radio.setSpreadingFactor(profile.spreadingFactor) == RADIOLIB_ERR_NONE &&
-                      radio.setCodingRate(profile.codingRate) == RADIOLIB_ERR_NONE &&
-                      radio.setBandwidth(profile.bandwidth) == RADIOLIB_ERR_NONE &&
-                      radio.setPreambleLength(8) == RADIOLIB_ERR_NONE &&
-                      radio.setCRC(true) == RADIOLIB_ERR_NONE &&
-                      radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE;
+            stat = 
+                radio.setModem(RADIOLIB_MODEM_LORA) == RADIOLIB_ERR_NONE &&
+                radio.setFrequency(currentFreq) == RADIOLIB_ERR_NONE &&
+                radio.setSpreadingFactor(profile.spreadingFactor) == RADIOLIB_ERR_NONE &&
+                radio.setCodingRate(profile.codingRate) == RADIOLIB_ERR_NONE &&
+                radio.setBandwidth(profile.bandwidth) == RADIOLIB_ERR_NONE &&
+                radio.setPreambleLength(LORA_PREAMBLE_LEN) == RADIOLIB_ERR_NONE &&
+                radio.setCRC(true) == RADIOLIB_ERR_NONE &&
+                radio.setOutputPower(currentTX) == RADIOLIB_ERR_NONE &&
+                radio.setSyncWord(LORA_SYNC_WORD) == RADIOLIB_ERR_NONE;
 
-            if (success)
+            if (stat)
             {
                 _mode = RadioMode::LORA;
                 currentSF = profile.spreadingFactor;
@@ -1273,21 +997,14 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                 currentBW = profile.bandwidth;
                 currentProfileIndex = profileIndex;
                 updateRetryParameters(); // Обновляем адаптивные параметры
-                // LLog("LoRaCore: Применён LoRa профиль " + String(profileIndex) +
-                //      " (SF=" + String(profile.spreadingFactor) +
-                //      ", CR=" + String(profile.codingRate) +
-                //      ", BW=" + String(profile.bandwidth, 1) + "kHz)");
             }
         }
         else if (profile.mode == RadioProfileMode::FSK)
         {
             // Применяем GFSK профиль (SX1262 поддерживает GFSK, не классический FSK)
             int result;
-
-            // Убеждаемся что модуль в standby
-            radio.standby();
+            radio.standby(); // Убеждаемся что модуль в standby
             delay(5);
-
             // Для SX1262 попробуем альтернативный подход - сначала настроим модем FSK
             result = radio.setModem(RADIOLIB_MODEM_FSK);
             if (result != RADIOLIB_ERR_NONE)
@@ -1296,8 +1013,6 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                 xSemaphoreGive(radioSemaphore);
                 return false;
             }
-
-            // Устанавливаем частоту
             result = radio.setFrequency(currentFreq);
             if (result != RADIOLIB_ERR_NONE)
             {
@@ -1305,7 +1020,6 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                 xSemaphoreGive(radioSemaphore);
                 return false;
             }
-
             // Попробуем использовать стандартные методы вместо beginFSK
             result = radio.setBitRate(profile.bitrate / 1000.0f);
             if (result == RADIOLIB_ERR_NONE)
@@ -1329,7 +1043,6 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                     xSemaphoreGive(radioSemaphore);
                     return false;
                 }
-
             }
             else
             {
@@ -1343,7 +1056,6 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                     xSemaphoreGive(radioSemaphore);
                     return false;
                 }
-
                 // Попробуем с увеличенной длиной преамбулы и другими параметрами
                 result = radio.beginFSK(profile.bitrate / 1000.0f, profile.deviation / 1000.0f,
                                         profile.bandwidth, 32, 10.0f, false);
@@ -1357,7 +1069,6 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                     return false;
                 }
             }
-
             // Включаем CRC
             result = radio.setCRC(true);
             if (result != RADIOLIB_ERR_NONE)
@@ -1365,23 +1076,21 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
                 LLog("LoRaCore: GFSK setCRC error: " + String(result));
                 xSemaphoreGive(radioSemaphore);
                 return false;
+            } else {
+                LLog("LoRaCore: GFSK setCRC успешно");
             }
 
             // Если дошли сюда - всё успешно
-            success = true;
+            stat = true;
             _mode = RadioMode::FSK;
             currentBitrate = profile.bitrate;
             currentDeviation = profile.deviation;
             currentBW = profile.bandwidth;
             currentProfileIndex = profileIndex;
             updateRetryParameters(); // Обновляем адаптивные параметры
-            // LLog("LoRaCore: Применён GFSK профиль " + String(profileIndex) +
-            //      " (Bitrate=" + String(profile.bitrate) +
-            //      ", Dev=" + String(profile.deviation) +
-            //      ", RxBW=" + String(profile.bandwidth, 1) + "kHz)");
         }
 
-        if (success)
+        if (stat)
         {
             radio.startReceive();
         }
@@ -1391,28 +1100,21 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
         }
 
         xSemaphoreGive(radioSemaphore);
-        return success;
+        return stat;
     }
 
-    LLog("LoRaCore: Не удалось захватить радио семафор для профиля " + String(profileIndex));
+    LLog("LoRaCore:failed to get semaphore for profile " + String(profileIndex));
     return false;
 }
 
-// Получить информацию о текущем профиле
 String LoRaCore::getCurrentProfileInfo() const
 {
     if (_mode == RadioMode::LORA)
     {
-        return "LoRa #" + String(currentProfileIndex) +
-               ": SF=" + String(currentSF) +
-               ", CR=" + String(currentCR) +
-               ", BW=" + String(currentBW, 1) + "kHz";
+        return "LoRa #" + String(currentProfileIndex) +": SF=" + String(currentSF) + ", CR=" + String(currentCR) +", BW=" + String(currentBW, 1) + "kHz";
     }
     else
     {
-        return "FSK #" + String(currentProfileIndex) +
-               ": " + String(currentBitrate / 1000.0f, 1) + "kb/s" +
-               ", dev=" + String(currentDeviation / 1000.0f, 1) + "k" +
-               ", bw=" + String(currentBW, 1) + "k";
+        return "FSK #" + String(currentProfileIndex) +": " + String(currentBitrate / 1000.0f, 1) + "kb/s" + ", dev=" + String(currentDeviation / 1000.0f, 1) + "k" + ", bw=" + String(currentBW, 1) + "k";
     }
 }

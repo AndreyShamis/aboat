@@ -95,6 +95,19 @@ enum CommandType : uint8_t
 #define BOAT_TMR_OIL_PUMP_UPDATE_TIME   360000
 #define BOAT_TMR_STSTEM_PRINT_TIME      3600000
 
+  // --- ПАРАМЕТРЫ LORA ---
+#define LORA_FREQUENCY      863.21 //868.0
+#define LORA_BANDWIDTH      125.0 // кГц (можно попробовать 62.5 для большей дальности)
+#define LORA_SF             12    // Spreading Factor (от 6 до 12, 11/12 для дальности)
+#define LORA_CODING_RATE    7     // Coding Rate (от 5 до 8, 7/8 для надежности)
+#define LORA_SYNC_WORD      0x16 // Важно, чтобы совпадал на всех устройствах
+#define LORA_TX_POWER       22    // dBm (макс. 22 для SX1262, проверьте свои региональные ограничения)
+#define LORA_PREAMBLE_LEN   8     // Длина преамбулы (обычно 8)
+
+
+#define LORA_INCOMING_QUEUE_SIZE 25
+#define LORA_OUTGOING_QUEUE_SIZE 25
+
 #ifdef HW_HELTEC
   #define I2C_SDA 21
   #define I2C_SCL 20
@@ -133,14 +146,7 @@ enum CommandType : uint8_t
   #define LORA_DIO1  14
   #define LORA_BUSY  13
 
-  // --- ПАРАМЕТРЫ LORA ---
-  #define LORA_FREQUENCY      863.21 //868.0
-  #define LORA_BANDWIDTH      125.0 // кГц (можно попробовать 62.5 для большей дальности)
-  #define LORA_SF             12    // Spreading Factor (от 6 до 12, 11/12 для дальности)
-  #define LORA_CODING_RATE    7     // Coding Rate (от 5 до 8, 7/8 для надежности)
-  #define LORA_SYNC_WORD      0x16 // Важно, чтобы совпадал на всех устройствах
-  #define LORA_TX_POWER       22    // dBm (макс. 22 для SX1262, проверьте свои региональные ограничения)
-  #define LORA_PREAMBLE_LEN   8     // Длина преамбулы (обычно 8)
+
 
   #define DEVICE_ID_BOAT     0x01
   #define DEVICE_ID_BASE     0x02
