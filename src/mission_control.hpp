@@ -742,22 +742,22 @@ private:
             if (hdr.packetType == CMD_REQUEST_ASA)
             {
                 sendAsaResponse(loraComm, nextPacketId++, profileIndex, sender);
-                addLog("3 [MC] ASA Response sent");
-                vTaskDelay(pdMS_TO_TICKS(50)); 
+                addLog("3 [MC] ASA Response sent to LORA");
+                vTaskDelay(pdMS_TO_TICKS(250)); 
             }
             else
             {
                 addLog("4 [MC] ASA Response received, applying profile index " + String(profileIndex));
             }
-            if(loraComm->getOutgoingQueueCount() > 0) {
+            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getIncomingQueueCount() > 0) {
                 addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
-                vTaskDelay(pdMS_TO_TICKS(409)); // Ждем, чтобы пакет ушел
+                vTaskDelay(pdMS_TO_TICKS(201)); // Ждем, чтобы пакет ушел
             }
             if(loraComm->getOutgoingQueueCount() > 0) {
                 addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
                 vTaskDelay(pdMS_TO_TICKS(209)); // Ждем, чтобы пакет ушел
             }
-            if(loraComm->getOutgoingQueueCount() > 0) {
+            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getIncomingQueueCount() > 0) {
                 addLog("[MC] Outgoing queue count: " + String(loraComm->getOutgoingQueueCount()));
                 vTaskDelay(pdMS_TO_TICKS(207)); // Ждем, чтобы пакет ушел
             }

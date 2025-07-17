@@ -47,7 +47,7 @@ inline void sendAsaResponse(LoRaCore* loraCore, uint16_t packetId, uint8_t profi
     PacketAsaExchange pkt(CMD_REPOSNCE_ASA);
     pkt.packetId = packetId;
     pkt.setProfile(profileIndex);
-    loraCore->sendPacketBase(receiver, pkt, (const uint8_t*)&pkt.profileIndex, false);
+    loraCore->sendPacketBase(receiver, pkt, (const uint8_t*)&pkt.profileIndex, true);
 }
 
 // Пример разбора входящего ASA пакета

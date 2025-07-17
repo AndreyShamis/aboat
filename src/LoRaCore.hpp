@@ -505,7 +505,7 @@ private:
         while (true)
         {
             // Уменьшаем таймаут ожидания для более быстрой обработки
-            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(50)) == pdTRUE)
+            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(25)) == pdTRUE)
             {
                 if (radioSemaphore)
                     xSemaphoreTake(radioSemaphore, portMAX_DELAY);
@@ -533,11 +533,11 @@ private:
                     payloadHex += hexByte;
                 }
 
-                snprintf(s, sizeof(s),"[TX:%c][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u ",getCurrentProfileIndex(), (int)len, pkt.senderId, pkt.receiverId,pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                snprintf(s, sizeof(s),"[TX:%d][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u ", getCurrentProfileIndex() , (int)len, pkt.senderId, pkt.receiverId,pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                 String fullLog = String(s) + ", pl=" + payloadHex;
                 putToLogBuffer(fullLog);
             }
-            uint32_t randomDelay = 3 + (esp_random() % 7); // 3-5 мс
+            uint32_t randomDelay = 3 + (esp_random() % 5);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
