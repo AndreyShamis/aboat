@@ -571,285 +571,7 @@ public:
 
     unsigned long lastSync = 0;
 
-    void oldHandlePacket()
-    {
-        LoRaPacket pkt;
-        if (loraComm->receive(pkt) && pkt.senderId != BOAT_DEVICE_ID)
-        {
-            uint8_t senderId = pkt.senderId;
-            PacketBase hdr;
-            hdr.packetType = pkt.packetType;
-            hdr.packetId = pkt.packetId;
-            hdr.payloadLen = pkt.payloadLen;
-            const uint8_t *buf = pkt.payload;
-            float snr = loraComm->getRadio().getSNR();
-            float rssi = loraComm->getRadio().getRSSI();
-            char sd[256];
-            snprintf(sd, sizeof(sd),
-                     "[P:%d][RSSI:%.2f/%.2fdBm,SNR=%.1fdB] T=%c from=%d id=%d P: %s",
-                     loraComm->getCurrentProfileIndex(), rssi, smoothedRssi, snr,
-                     (char)hdr.packetType, senderId, hdr.packetId,
-                     hdr.toString().c_str());
-            addLog(String(sd));
-            if (pkt.senderId == MISSION_CONTROL_ID)
-            {
-                lastPacketReceived = millis(); 
-                PongRssi = updateSmoothedRssi(rssi);
-                missionCOntrolIsActivae = true;
-            }
-            // Диспетчер внутри Boat
-            switch (hdr.packetType)
-            {
 
-            case CMD_COMMAND_STRING:
-            {
-                addLog("Got COMMND");
-                PacketCommand cmd{};
-                cmd.packetType = hdr.packetType;
-                cmd.packetId = hdr.packetId;
-                cmd.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&cmd) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                // выполнить строку команды
-                String s;
-                for (size_t i = 0; i < cmd.payloadLen; ++i)
-                {
-                    s += char(buf[i]);
-                }
-                parser.processLine(s);
-                break;
-            }
-
-            case CMD_TELEMETRY_FRAGMENT:
-            {
-                addLog("Got CMD_TELEMETRY_FRAGMENT");
-                PacketTelemetry tel{};
-                tel.packetType = hdr.packetType;
-                tel.packetId = hdr.packetId;
-                tel.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&tel) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                onTelemetry(tel);
-                break;
-            }
-
-            case CMD_INFO_ENGINE:
-            {
-                addLog("Got CMD_INFO_ENGINE");
-                PacketInfoEngine info{};
-                info.packetType = hdr.packetType;
-                info.packetId = hdr.packetId;
-                info.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&info) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                onInfoEngine(info);
-                break;
-            }
-
-            case CMD_STATUS:
-            {
-                addLog("Got CMD_STATUS");
-                PacketStatus st{};
-                st.packetType = hdr.packetType;
-                st.packetId = hdr.packetId;
-                st.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&st) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                onStatus(st);
-                break;
-            }
-
-            case CMD_ACK:
-            {
-                addLog("Got CMD_ACK");
-                PacketAck ackIn{};
-                ackIn.packetType = hdr.packetType;
-                ackIn.packetId = hdr.packetId;
-                ackIn.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&ackIn) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                onAck(ackIn);
-                break;
-            }
-
-            case CMD_BULK_ACK:
-            {
-                // Обработка bulk ACK от Mission Control
-                if (hdr.payloadLen < sizeof(uint8_t))
-                {
-                    addLog("[BOAT] ⚠️ Invalid BULK ACK packet size");
-                    break;
-                }
-
-                uint8_t count = buf[0];
-                if (count > 10 || hdr.payloadLen != sizeof(uint8_t) + (count * sizeof(uint16_t)))
-                {
-                    addLog("[BOAT] ⚠️ Invalid BULK ACK count: " + String(count));
-                    break;
-                }
-
-                addLog("[BOAT] ✅ Received BULK ACK for " + String(count) + " packets from MC");
-                for (uint8_t i = 0; i < count; i++)
-                {
-                    uint16_t ackedId;
-                    memcpy(&ackedId, &buf[1 + i * sizeof(uint16_t)], sizeof(uint16_t));
-                    addLog("[BOAT] 📨 Confirmed packet ID: " + String(ackedId));
-                }
-                break;
-            }
-
-            case CMD_CONFIG:
-            {
-                addLog("Got CMD_CONFIG");
-                PacketConfig cfg{};
-                cfg.packetType = hdr.packetType;
-                cfg.packetId = hdr.packetId;
-                cfg.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&cfg) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                onConfig(cfg);
-                break;
-            }
-
-            case CMD_NAV:
-            {
-                addLog("Got CMD_NAV");
-                PacketNav nav{};
-                nav.packetType = hdr.packetType;
-                nav.packetId = hdr.packetId;
-                nav.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&nav) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                onNav(nav);
-                break;
-            }
-
-            case CMD_HEARTBEAT:
-            {
-                addLog("Got CMD_HEARTBEAT");
-                PacketHeartbeat hb{};
-                hb.packetType = hdr.packetType;
-                hb.packetId = hdr.packetId;
-                hb.payloadLen = hdr.payloadLen;
-                memcpy(reinterpret_cast<uint8_t *>(&hb) + sizeof(PacketBase),
-                       buf,
-                       hdr.payloadLen);
-                onHeartbeat(hb);
-                break;
-            }
-            case CMD_PONG:
-            {
-                // PONG - важная команда, оставляем лог для диагностики связи
-                addLog("Got CMD_PONG");
-                break;
-            }
-            case CMD_REPOSNCE_ASA:
-            {
-                addLog("Got CMD_REPOSNCE_ASA");
-                waitingForASAAck = false;
-                
-                // Удаляем ASA запрос из pending списка, чтобы избежать ретраев
-                if (lastAsaRequestId != 0 && loraComm) {
-                    if (loraComm->removePendingPacket(lastAsaRequestId)) {
-                        addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (got response)");
-                    }
-                    lastAsaRequestId = 0;
-                }
-                
-                asaActive = true;
-                asaLastSwitchTime = millis();
-
-                if (hdr.payloadLen == sizeof(uint8_t))
-                {
-                    uint8_t profileIndex = buf[0];
-
-                    addLog("✅ ASA response received. Applying higher LoRa profile old/new index: " + String(loraComm->getCurrentProfileIndex()) + "/" + String(profileIndex));
-                    applyProfile(profileIndex);
-                }
-                else
-                {
-                    addLog("⚠️ Invalid ASA payload size");
-                }
-
-                break;
-            }
-            case CMD_GET_BOAT_STATUS:
-            {
-                addLog("Got CMD_GET_BOAT_STATUS");
-                sendStatusJsonFragmentsTask();
-                break;
-            }
-            case CMD_PING:
-            {
-                addLog("Got CMD_PING: smoothedRssi" + String(smoothedRssi) + "dBm");
-                break;
-            }
-            case CMD_REQUEST_INFO:
-            {
-                addLog("SPECIAL Got CMD_REQUEST_INFO");
-                // Универсальный “P” запрос — в payloadBuf[0] лежит нужный код ('T','I','S','F','G','D'…)
-                CommandType what = static_cast<CommandType>(buf[0]);
-                switch (what)
-                {
-                case CMD_BOAT_STATUS_REPORT:
-                { // 'T' или 'D'
-                    sendStatusJsonFragmentsTask();
-                    break;
-                }
-                case CMD_INFO_ENGINE:
-                { // 'I'
-                    PacketInfoEngine info{};
-                    info.packetType = CMD_INFO_ENGINE;
-                    info.packetId = nextPacketId++;
-                    info.payloadLen = 0;
-                    loraComm->sendPacketBase(senderId, info, nullptr);
-                    break;
-                }
-                case CMD_CONFIG:
-                { // 'F'
-                    PacketConfig cfg{};
-                    cfg.packetType = CMD_CONFIG;
-                    cfg.packetId = nextPacketId++;
-                    cfg.payloadLen = 0; // или >0, если ты что-то пишешь в payload
-                    loraComm->sendPacketBase(senderId, cfg, nullptr);
-                    break;
-                }
-                case CMD_NAV:
-                { // 'G'
-                    PacketNav nav{};
-                    nav.packetType = CMD_NAV;
-                    nav.packetId = nextPacketId++;
-                    // заполняем nav… (координаты, курс, скорость)
-                    loraComm->sendPacketBase(senderId, nav, nullptr);
-                    break;
-                }
-                default:
-                    addLog("Boat: Unsupported info request '" + String((char)what) + "'");
-                    break;
-                }
-                break;
-            }
-            default:
-                addLog("Got Unknown LoRa cmd: " + String((char)hdr.packetType));
-                break;
-            }
-
-            if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && hdr.packetType != CMD_RSSI_REPORT)
-            {
-                // Используем новую систему bulk ACK вместо мгновенной отправки
-                addToBulkAck(hdr.packetId);
-                // В конце — отправляем ACK обратно отправителю
-                lastPacketReceived = millis();
-            }
-        }
-    }
 
     void keep()
     {
@@ -894,8 +616,8 @@ public:
         updateSensorsOptimized();
 
         // Process LoRa packets - вынесено в отдельную функцию
-        // processLoRaPackets();
-        oldHandlePacket();
+        processLoRaPackets();
+        //oldHandlePacket();
 
         // Control and navigation updates
         updateControlAndNavigation();
@@ -924,6 +646,7 @@ public:
             PongRssi = 0;
             missionCOntrolIsActivae = false;
         }
+
         if (missionCOntrolIsActivae)
         {
             adaptiveLoraUpdate();
@@ -1915,6 +1638,291 @@ private:
         }
     }
 
+    void oldHandlePacket()
+    {
+        LoRaPacket pkt;
+        if (loraComm->receive(pkt) && pkt.senderId != BOAT_DEVICE_ID)
+        {
+            uint8_t senderId = pkt.senderId;
+            PacketBase hdr;
+            hdr.packetType = pkt.packetType;
+            hdr.packetId = pkt.packetId;
+            hdr.payloadLen = pkt.payloadLen;
+            const uint8_t *buf = pkt.payload;
+            float snr = loraComm->getRadio().getSNR();
+            float rssi = loraComm->getRadio().getRSSI();
+            char sd[256];
+            snprintf(sd, sizeof(sd),
+                     "[P:%d][RSSI:%.2f/%.2fdBm,SNR=%.1fdB] T=%c from=%d id=%d P: %s",
+                     loraComm->getCurrentProfileIndex(), rssi, smoothedRssi, snr,
+                     (char)hdr.packetType, senderId, hdr.packetId,
+                     hdr.toString().c_str());
+            addLog(String(sd));
+            if (pkt.senderId == MISSION_CONTROL_ID)
+            {
+                lastPacketReceived = millis(); 
+                PongRssi = updateSmoothedRssi(rssi);
+                if(!missionCOntrolIsActivae){
+                    smoothedRssi = rssi;
+                    PongRssi = rssi;
+                }
+                missionCOntrolIsActivae = true;
+            }
+            // Диспетчер внутри Boat
+            switch (hdr.packetType)
+            {
+
+            case CMD_COMMAND_STRING:
+            {
+                
+                PacketCommand cmd{};
+                cmd.packetType = hdr.packetType;
+                cmd.packetId = hdr.packetId;
+                cmd.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&cmd) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                // выполнить строку команды
+                String s;
+                for (size_t i = 0; i < cmd.payloadLen; ++i)
+                {
+                    s += char(buf[i]);
+                }
+                addLog("Got COMMND: TYPE" + (char)cmd.packetType + String(":") + s);
+                parser.processLine(s);
+                break;
+            }
+
+            case CMD_TELEMETRY_FRAGMENT:
+            {
+                addLog("Got CMD_TELEMETRY_FRAGMENT");
+                PacketTelemetry tel{};
+                tel.packetType = hdr.packetType;
+                tel.packetId = hdr.packetId;
+                tel.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&tel) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                onTelemetry(tel);
+                break;
+            }
+
+            case CMD_INFO_ENGINE:
+            {
+                addLog("Got CMD_INFO_ENGINE");
+                PacketInfoEngine info{};
+                info.packetType = hdr.packetType;
+                info.packetId = hdr.packetId;
+                info.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&info) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                onInfoEngine(info);
+                break;
+            }
+
+            case CMD_STATUS:
+            {
+                addLog("Got CMD_STATUS");
+                PacketStatus st{};
+                st.packetType = hdr.packetType;
+                st.packetId = hdr.packetId;
+                st.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&st) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                onStatus(st);
+                break;
+            }
+
+            case CMD_ACK:
+            {
+                addLog("Got CMD_ACK");
+                PacketAck ackIn{};
+                ackIn.packetType = hdr.packetType;
+                ackIn.packetId = hdr.packetId;
+                ackIn.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&ackIn) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                onAck(ackIn);
+                break;
+            }
+
+            case CMD_BULK_ACK:
+            {
+                // Обработка bulk ACK от Mission Control
+                if (hdr.payloadLen < sizeof(uint8_t))
+                {
+                    addLog("[BOAT] ⚠️ Invalid BULK ACK packet size");
+                    break;
+                }
+
+                uint8_t count = buf[0];
+                if (count > 10 || hdr.payloadLen != sizeof(uint8_t) + (count * sizeof(uint16_t)))
+                {
+                    addLog("[BOAT] ⚠️ Invalid BULK ACK count: " + String(count));
+                    break;
+                }
+
+                addLog("[BOAT] ✅ Received BULK ACK for " + String(count) + " packets from MC");
+                for (uint8_t i = 0; i < count; i++)
+                {
+                    uint16_t ackedId;
+                    memcpy(&ackedId, &buf[1 + i * sizeof(uint16_t)], sizeof(uint16_t));
+                    addLog("[BOAT] 📨 Confirmed packet ID: " + String(ackedId));
+                }
+                break;
+            }
+
+            case CMD_CONFIG:
+            {
+                addLog("Got CMD_CONFIG");
+                PacketConfig cfg{};
+                cfg.packetType = hdr.packetType;
+                cfg.packetId = hdr.packetId;
+                cfg.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&cfg) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                onConfig(cfg);
+                break;
+            }
+
+            case CMD_NAV:
+            {
+                addLog("Got CMD_NAV");
+                PacketNav nav{};
+                nav.packetType = hdr.packetType;
+                nav.packetId = hdr.packetId;
+                nav.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&nav) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                onNav(nav);
+                break;
+            }
+
+            case CMD_HEARTBEAT:
+            {
+                addLog("Got CMD_HEARTBEAT");
+                PacketHeartbeat hb{};
+                hb.packetType = hdr.packetType;
+                hb.packetId = hdr.packetId;
+                hb.payloadLen = hdr.payloadLen;
+                memcpy(reinterpret_cast<uint8_t *>(&hb) + sizeof(PacketBase),
+                       buf,
+                       hdr.payloadLen);
+                onHeartbeat(hb);
+                break;
+            }
+            case CMD_PONG:
+            {
+                // PONG - важная команда, оставляем лог для диагностики связи
+                addLog("Got CMD_PONG");
+                break;
+            }
+            case CMD_REPOSNCE_ASA:
+            {
+                addLog("Got CMD_REPOSNCE_ASA");
+                waitingForASAAck = false;
+                
+                // Удаляем ASA запрос из pending списка, чтобы избежать ретраев
+                if (lastAsaRequestId != 0 && loraComm) {
+                    if (loraComm->removePendingPacket(lastAsaRequestId)) {
+                        addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (got response)");
+                    }
+                    lastAsaRequestId = 0;
+                }
+                
+                asaActive = true;
+                asaLastSwitchTime = millis();
+
+                if (hdr.payloadLen == sizeof(uint8_t))
+                {
+                    uint8_t profileIndex = buf[0];
+
+                    addLog("✅ ASA response received. Applying higher LoRa profile old/new index: " + String(loraComm->getCurrentProfileIndex()) + "/" + String(profileIndex));
+                    applyProfile(profileIndex);
+                }
+                else
+                {
+                    addLog("⚠️ Invalid ASA payload size");
+                }
+
+                break;
+            }
+            case CMD_GET_BOAT_STATUS:
+            {
+                addLog("Got CMD_GET_BOAT_STATUS");
+                sendStatusJsonFragmentsTask();
+                break;
+            }
+            case CMD_PING:
+            {
+                addLog("Got CMD_PING: smoothedRssi" + String(smoothedRssi) + "dBm");
+                break;
+            }
+            case CMD_REQUEST_INFO:
+            {
+                addLog("SPECIAL Got CMD_REQUEST_INFO");
+                // Универсальный “P” запрос — в payloadBuf[0] лежит нужный код ('T','I','S','F','G','D'…)
+                CommandType what = static_cast<CommandType>(buf[0]);
+                switch (what)
+                {
+                case CMD_BOAT_STATUS_REPORT:
+                { // 'T' или 'D'
+                    sendStatusJsonFragmentsTask();
+                    break;
+                }
+                case CMD_INFO_ENGINE:
+                { // 'I'
+                    PacketInfoEngine info{};
+                    info.packetType = CMD_INFO_ENGINE;
+                    info.packetId = nextPacketId++;
+                    info.payloadLen = 0;
+                    loraComm->sendPacketBase(senderId, info, nullptr);
+                    break;
+                }
+                case CMD_CONFIG:
+                { // 'F'
+                    PacketConfig cfg{};
+                    cfg.packetType = CMD_CONFIG;
+                    cfg.packetId = nextPacketId++;
+                    cfg.payloadLen = 0; // или >0, если ты что-то пишешь в payload
+                    loraComm->sendPacketBase(senderId, cfg, nullptr);
+                    break;
+                }
+                case CMD_NAV:
+                { // 'G'
+                    PacketNav nav{};
+                    nav.packetType = CMD_NAV;
+                    nav.packetId = nextPacketId++;
+                    // заполняем nav… (координаты, курс, скорость)
+                    loraComm->sendPacketBase(senderId, nav, nullptr);
+                    break;
+                }
+                default:
+                    addLog("Boat: Unsupported info request '" + String((char)what) + "'");
+                    break;
+                }
+                break;
+            }
+            default:
+                addLog("Got Unknown LoRa cmd: " + String((char)hdr.packetType));
+                break;
+            }
+
+            if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && hdr.packetType != CMD_RSSI_REPORT)
+            {
+                // Используем новую систему bulk ACK вместо мгновенной отправки
+                addToBulkAck(hdr.packetId);
+                // В конце — отправляем ACK обратно отправителю
+                lastPacketReceived = millis();
+            }
+        }
+    }
+
     // Separate LoRa packet processing with stack protection
     void processLoRaPackets()
     {
@@ -1944,6 +1952,31 @@ private:
         hdr.payloadLen = pkt.payloadLen;
         const uint8_t *buf = pkt.payload;
 
+        // Get RSSI and SNR for all packets (like in oldHandlePacket)
+        float snr = loraComm->getRadio().getSNR();
+        float rssi = loraComm->getRadio().getRSSI();
+        
+        // Log packet info like in oldHandlePacket
+        char sd[256];
+        snprintf(sd, sizeof(sd),
+                 "[P:%d][RSSI:%.2f/%.2fdBm,SNR=%.1fdB] T=%c from=%d id=%d P: %s",
+                 loraComm->getCurrentProfileIndex(), rssi, smoothedRssi, snr,
+                 (char)hdr.packetType, senderId, hdr.packetId,
+                 hdr.toString().c_str());
+        addLog(String(sd));
+
+        // Handle MissionControl specific processing (like in oldHandlePacket)
+        if (pkt.senderId == MISSION_CONTROL_ID)
+        {
+            lastPacketReceived = millis(); 
+            PongRssi = updateSmoothedRssi(rssi);
+            if(!missionCOntrolIsActivae){
+                smoothedRssi = rssi;
+                PongRssi = rssi;
+            }
+            missionCOntrolIsActivae = true;
+        }
+
         // Quick check for critical commands (emergency stop, etc.)
         if (hdr.packetType == CMD_COMMAND_STRING)
         {
@@ -1957,14 +1990,8 @@ private:
         }
         else
         {
-            // Defer other packets to main processing in keep() loop
-            // This reduces stack usage by not processing heavy operations here
-            static unsigned long lastDeferredProcess = 0;
-            if (millis() - lastDeferredProcess >= 50)
-            { // Process deferred packets every 50ms
-                processGeneralPacket(hdr, buf, senderId);
-                lastDeferredProcess = millis();
-            }
+            // Process other packets immediately to match oldHandlePacket behavior
+            processGeneralPacket(hdr, buf, senderId);
         }
     }
 
@@ -2078,38 +2105,34 @@ private:
         cmd.payloadLen = hdr.payloadLen;
         memcpy(reinterpret_cast<uint8_t *>(&cmd) + sizeof(PacketBase), buf, hdr.payloadLen);
 
-        // Convert to string with minimal stack usage
+        // Convert to string with minimal stack usage (matching oldHandlePacket)
         String s;
         s.reserve(hdr.payloadLen + 1);
         for (size_t i = 0; i < cmd.payloadLen; ++i)
         {
             s += char(buf[i]);
         }
+        
+        // Log the command like in oldHandlePacket
+        addLog("Got COMMND: TYPE" + (char)cmd.packetType + String(":") + s);
+        
+        // Process the command
         parser.processLine(s);
 
-        // Update RSSI and mission control status
-        if (loraComm)
-        {
-            PongRssi = updateSmoothedRssi(loraComm->getRadio().getRSSI());
-            missionCOntrolIsActivae = true;
-        }
-        addLog("Got COMMAND");
+        // Update RSSI and mission control status (no need to duplicate here as it's done in handleLoRaPacketOptimized)
     }
 
     void processPingPongPacket(const PacketBase &hdr, uint8_t senderId)
     {
-        if (loraComm)
-        {
-            PongRssi = updateSmoothedRssi(loraComm->getRadio().getRSSI());
-            missionCOntrolIsActivae = true;
-        }
+        // RSSI handling is already done in handleLoRaPacketOptimized for MissionControl
 
         if (hdr.packetType == CMD_PING)
         {
             addLog("Got CMD_PING: smoothedRssi " + String(smoothedRssi) + "dBm");
         }
-        else
+        else if (hdr.packetType == CMD_PONG)
         {
+            // PONG - важная команда, оставляем лог для диагностики связи (matching oldHandlePacket)
             addLog("Got CMD_PONG");
         }
     }
@@ -2117,31 +2140,101 @@ private:
     void processGeneralPacket(const PacketBase &hdr, const uint8_t *buf, uint8_t senderId)
     {
         // This function handles non-critical packets with full processing
-        // but is called less frequently to reduce stack pressure
+        // to match the complete functionality from oldHandlePacket
 
         switch (hdr.packetType)
         {
         case CMD_TELEMETRY_FRAGMENT:
+        {
             addLog("Got CMD_TELEMETRY_FRAGMENT");
+            PacketTelemetry tel{};
+            tel.packetType = hdr.packetType;
+            tel.packetId = hdr.packetId;
+            tel.payloadLen = hdr.payloadLen;
+            memcpy(reinterpret_cast<uint8_t *>(&tel) + sizeof(PacketBase),
+                   buf,
+                   hdr.payloadLen);
+            onTelemetry(tel);
             break;
+        }
         case CMD_INFO_ENGINE:
+        {
             addLog("Got CMD_INFO_ENGINE");
+            PacketInfoEngine info{};
+            info.packetType = hdr.packetType;
+            info.packetId = hdr.packetId;
+            info.payloadLen = hdr.payloadLen;
+            memcpy(reinterpret_cast<uint8_t *>(&info) + sizeof(PacketBase),
+                   buf,
+                   hdr.payloadLen);
+            onInfoEngine(info);
             break;
+        }
         case CMD_STATUS:
+        {
             addLog("Got CMD_STATUS");
+            PacketStatus st{};
+            st.packetType = hdr.packetType;
+            st.packetId = hdr.packetId;
+            st.payloadLen = hdr.payloadLen;
+            memcpy(reinterpret_cast<uint8_t *>(&st) + sizeof(PacketBase),
+                   buf,
+                   hdr.payloadLen);
+            onStatus(st);
             break;
+        }
         case CMD_ACK:
+        {
             addLog("Got CMD_ACK");
+            PacketAck ackIn{};
+            ackIn.packetType = hdr.packetType;
+            ackIn.packetId = hdr.packetId;
+            ackIn.payloadLen = hdr.payloadLen;
+            memcpy(reinterpret_cast<uint8_t *>(&ackIn) + sizeof(PacketBase),
+                   buf,
+                   hdr.payloadLen);
+            onAck(ackIn);
             break;
+        }
         case CMD_CONFIG:
+        {
             addLog("Got CMD_CONFIG");
+            PacketConfig cfg{};
+            cfg.packetType = hdr.packetType;
+            cfg.packetId = hdr.packetId;
+            cfg.payloadLen = hdr.payloadLen;
+            memcpy(reinterpret_cast<uint8_t *>(&cfg) + sizeof(PacketBase),
+                   buf,
+                   hdr.payloadLen);
+            onConfig(cfg);
             break;
+        }
         case CMD_NAV:
+        {
             addLog("Got CMD_NAV");
+            PacketNav nav{};
+            nav.packetType = hdr.packetType;
+            nav.packetId = hdr.packetId;
+            nav.payloadLen = hdr.payloadLen;
+            memcpy(reinterpret_cast<uint8_t *>(&nav) + sizeof(PacketBase),
+                   buf,
+                   hdr.payloadLen);
+            onNav(nav);
             break;
+        }
         case CMD_HEARTBEAT:
+        {
             addLog("Got CMD_HEARTBEAT");
+            PacketHeartbeat hb{};
+            hb.packetType = hdr.packetType;
+            hb.packetId = hdr.packetId;
+            hb.payloadLen = hdr.payloadLen;
+            memcpy(reinterpret_cast<uint8_t *>(&hb) + sizeof(PacketBase),
+                   buf,
+                   hdr.payloadLen);
+            onHeartbeat(hb);
             break;
+        }
         case CMD_REPOSNCE_ASA:
             handleASAResponse(hdr, buf);
             break;
@@ -2153,34 +2246,44 @@ private:
             handleInfoRequest(hdr, buf, senderId);
             break;
         case CMD_BULK_ACK:
-            // Обработка bulk ACK от Mission Control в processGeneralPacket
-            if (hdr.payloadLen >= sizeof(uint8_t))
+        {
+            // Обработка bulk ACK от Mission Control (full implementation from oldHandlePacket)
+            if (hdr.payloadLen < sizeof(uint8_t))
             {
-                uint8_t count = buf[0];
-                if (count <= 10 && hdr.payloadLen == sizeof(uint8_t) + (count * sizeof(uint16_t)))
-                {
-                    addLog("[BOAT] ✅ Received BULK ACK for " + String(count) + " packets from MC (general)");
-                }
-                else
-                {
-                    addLog("[BOAT] ⚠️ Invalid BULK ACK in general processing");
-                }
+                addLog("[BOAT] ⚠️ Invalid BULK ACK packet size");
+                break;
             }
-            else
+
+            uint8_t count = buf[0];
+            if (count > 10 || hdr.payloadLen != sizeof(uint8_t) + (count * sizeof(uint16_t)))
             {
-                addLog("[BOAT] ⚠️ Invalid BULK ACK packet size in general");
+                addLog("[BOAT] ⚠️ Invalid BULK ACK count: " + String(count));
+                break;
+            }
+
+            addLog("[BOAT] ✅ Received BULK ACK for " + String(count) + " packets from MC");
+            for (uint8_t i = 0; i < count; i++)
+            {
+                uint16_t ackedId;
+                memcpy(&ackedId, &buf[1 + i * sizeof(uint16_t)], sizeof(uint16_t));
+                addLog("[BOAT] 📨 Confirmed packet ID: " + String(ackedId));
             }
             break;
+        }
         default:
             addLog("Got Unknown LoRa cmd: " + String((char)hdr.packetType));
             break;
         }
 
-        // Send ACK for non-ACK packets
-        if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG)
+        // Send ACK for non-ACK packets (matching oldHandlePacket logic)
+        if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && 
+            hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && 
+            hdr.packetType != CMD_RSSI_REPORT)
         {
             // Используем bulk ACK вместо мгновенной отправки
             addToBulkAck(hdr.packetId);
+            // Update lastPacketReceived like in oldHandlePacket
+            lastPacketReceived = millis();
         }
     }
 
@@ -2235,10 +2338,7 @@ private:
 
     void handleInfoRequest(const PacketBase &hdr, const uint8_t *buf, uint8_t senderId)
     {
-        if (loraComm)
-        {
-            PongRssi = updateSmoothedRssi(loraComm->getRadio().getRSSI());
-        }
+        // RSSI handling is already done in handleLoRaPacketOptimized for MissionControl
         addLog("SPECIAL Got CMD_REQUEST_INFO");
 
         CommandType what = static_cast<CommandType>(buf[0]);

@@ -40,6 +40,15 @@ struct LoRaPacket
     uint8_t payloadLen;
     // uint16_t crc;
     uint8_t payload[MAX_LORA_PAYLOAD];
+
+    // Getter functions
+    uint8_t getSenderId() const { return senderId; }
+    uint8_t getReceiverId() const { return receiverId; }
+    uint8_t getPacketType() const { return packetType; }
+
+    // Setter functions
+    void setSenderId(uint8_t id) { senderId = id; }
+    void setReceiverId(uint8_t id) { receiverId = id; }
 };
 static_assert(sizeof(LoRaPacket) <= 150, "LoRaPacket слишком большой!");
 #pragma pack(pop)
