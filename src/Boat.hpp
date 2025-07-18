@@ -639,6 +639,13 @@ public:
             missionCOntrolIsActivae = false;
         }
 
+        // 🚨 ПРИНУДИТЕЛЬНЫЙ переход на профиль 0 при потере связи с пультом
+        if (!missionCOntrolIsActivae && loraComm->getCurrentProfileIndex() != 0)
+        {
+            addLog("🚨 Mission Control неактивен - принудительный переход на профиль 0");
+            applyProfile(0);
+        }
+
         if (missionCOntrolIsActivae)
         {
             adaptiveLoraUpdate();
