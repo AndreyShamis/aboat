@@ -341,7 +341,8 @@ public:
                                     String response = "L:";
                                     if (arg == "S" || arg == "status") {
                                         String status = "Profile:" + String(loraComm->getCurrentProfileIndex()) + 
-                                               ",RSSI:" + String(smoothedRssi) + "dBm";
+                                               ",RSSI:" + String(smoothedRssi) + "dBm" +
+                                               ",Adaptive:" + String(allowAdaptiveLoraSwitch ? "ON" : "OFF");
                                         addLog("[LORA] " + status);
                                         response += status;
                                     } else if (arg.startsWith("P") || arg.startsWith("profile:")) {
@@ -358,6 +359,20 @@ public:
                                         // Trigger adaptive LoRa
                                         adaptiveLoraUpdate();
                                         response += "Adaptive LoRa triggered";
+                                    } else if (arg.startsWith("A:")) {
+                                        // Adaptive switching control: A:0 = disable, A:1 = enable
+                                        String adaptiveStr = arg.substring(2);
+                                        if (adaptiveStr == "0") {
+                                            allowAdaptiveLoraSwitch = false;
+                                            addLog("[LORA] Adaptive switching DISABLED by command");
+                                            response += "Adaptive switching disabled";
+                                        } else if (adaptiveStr == "1") {
+                                            allowAdaptiveLoraSwitch = true;
+                                            addLog("[LORA] Adaptive switching ENABLED by command");
+                                            response += "Adaptive switching enabled";
+                                        } else {
+                                            response += "Invalid adaptive command (use A:0 or A:1)";
+                                        }
                                     } else if (arg.length() > 0 && arg[0] >= '0' && arg[0] <= '9') {
                                         // Direct profile number input (e.g., "1", "12", etc.)
                                         int profileIndex = arg.toInt();
@@ -514,7 +529,7 @@ public:
                                     // Send response back to MissionControl
                                     sendResponseToMissionControl(response); });
 
-        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers), N (navigation), W (waypoints), T (time)");
+        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control), N (navigation), W (waypoints), T (time)");
 
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
@@ -647,6 +662,11 @@ public:
             addLog("💔 MissionControl heartbeat timeout (" + String(timeoutSeconds) + "s > " + String(ACTIVITY_TIMEOUT/1000) + "s) - deactivating");
             missionCOntrolIsActivae = false;
             PongRssi = 0;
+            
+            // 🔄 Отключаем адаптивное переключение при потере пульта
+            allowAdaptiveLoraSwitch = false;
+            addLog("❌ Adaptive LoRa switching disabled (MissionControl disconnected)");
+            
             // Сбрасываем кэш для немедленного применения профиля 0
             sensorCache.valid = false;
             // Если активен ASA режим - тоже выключаем
@@ -664,6 +684,10 @@ public:
             asaActive = false;
             PongRssi = 0;
             missionCOntrolIsActivae = false;
+            
+            // 🔄 Отключаем адаптивное переключение при потере пульта (дублирование для надежности)
+            allowAdaptiveLoraSwitch = false;
+            
             // Сбрасываем кэш для немедленного применения профиля 0
             sensorCache.valid = false;
         }
@@ -679,8 +703,8 @@ public:
             lastAdaptiveSwitchTime = 0;
         }
 
-        // Адаптивная LoRa работает ТОЛЬКО когда MissionControl активен
-        if (missionCOntrolIsActivae)
+        // Адаптивная LoRa работает ТОЛЬКО когда MissionControl активен И разрешено переключение
+        if (missionCOntrolIsActivae && allowAdaptiveLoraSwitch)
         {
             adaptiveLoraUpdate();
         }
@@ -900,6 +924,11 @@ public:
 
     void adaptiveLoraUpdate()
     {
+        // Проверяем разрешение на адаптивное переключение
+        if (!allowAdaptiveLoraSwitch) {
+            return; // Адаптивное переключение запрещено
+        }
+        
         if (waitingForASAAck || millis() - lastAdaptiveSwitchTime < ADAPTIVE_SWITCH_INTERVAL)
             return;
 
@@ -1667,6 +1696,7 @@ private:
     unsigned long lastAdaptiveSwitchTime = 0;
     float PongRssi = 0; // RSSI при получении PONG
     bool missionCOntrolIsActivae = false;
+    bool allowAdaptiveLoraSwitch = true; // Разрешение на автоматическое переключение профилей
 
     SensorCache sensorCache;
     PerformanceMetrics performanceMetrics;
@@ -1774,6 +1804,10 @@ private:
                 // Set a flag to trigger adaptation in next loop cycle
                 lastAdaptiveSwitchTime = millis() - ADAPTIVE_SWITCH_INTERVAL; // Force immediate adaptation
                 sensorCache.valid = false; // Force fresh readings
+                
+                // 🔄 Включаем адаптивное переключение при подключении пульта
+                allowAdaptiveLoraSwitch = true;
+                addLog("✅ Adaptive LoRa switching enabled (MissionControl connected)");
             }
             missionCOntrolIsActivae = true;
         }

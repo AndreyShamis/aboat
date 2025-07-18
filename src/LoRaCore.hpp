@@ -47,22 +47,20 @@ inline void packBaseIntoLoRa(LoRaPacket &out, uint8_t senderId, uint8_t receiver
                              const PacketBase &base, const uint8_t *payload)
 {
     memset(&out, 0, sizeof(out));
-    out.senderId = senderId;
-    out.receiverId = receiverId;
+    out.setSenderId(senderId);
+    out.setReceiverId(receiverId);
     out.packetType = base.packetType;
     out.packetId = base.packetId;
     
     // Debug: Log the input values to track corruption
     char debugBuf[100];
-    snprintf(debugBuf, sizeof(debugBuf), "📦 packBase: type=%c, id=%u, payloadLen=%u", 
-             base.packetType, base.packetId, base.payloadLen);
+    snprintf(debugBuf, sizeof(debugBuf), "📦 packBase: type=%c, id=%u, payloadLen=%u", base.packetType, base.packetId, base.payloadLen);
     Serial.println(debugBuf);
     
-    // Safety check: prevent memory corruption from invalid payload length
-    if (base.payloadLen > MAX_LORA_PAYLOAD) {
+    
+    if (base.payloadLen > MAX_LORA_PAYLOAD) { // Safety check: prevent memory corruption from invalid payload length
         out.payloadLen = 0; // Set to 0 to prevent further corruption
-        snprintf(debugBuf, sizeof(debugBuf), "❌ packBase: Invalid payloadLen=%u > MAX=%u", 
-                 base.payloadLen, MAX_LORA_PAYLOAD);
+        snprintf(debugBuf, sizeof(debugBuf), "❌ packBase: Invalid payloadLen=%u > MAX=%u", base.payloadLen, MAX_LORA_PAYLOAD);
         Serial.println(debugBuf);
     } else {
         out.payloadLen = base.payloadLen;
@@ -73,9 +71,7 @@ inline void packBaseIntoLoRa(LoRaPacket &out, uint8_t senderId, uint8_t receiver
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// UNIFIED LORA COMMUNICATION CLASS
-// ─────────────────────────────────────────────────────────────────────────────
+
 class LoRaCore
 {
 private:
@@ -264,10 +260,10 @@ private:
         PacketId_t ackedId;
         memcpy(&ackedId, pkt.payload, sizeof(ackedId));
         char s[80];
-        snprintf(s, sizeof(s), "📩 Single ACK received: id=%u from device %u", ackedId, pkt.senderId);
+        snprintf(s, sizeof(s), "📩 Single ACK received: id=%u from device %u", ackedId, pkt.getSenderId());
         putToLogBuffer(String(s));
 
-        handleSingleAck(ackedId, pkt.senderId, pkt.packetType);
+        handleSingleAck(ackedId, pkt.getSenderId(), pkt.packetType);
     }
 
     void handleBulkAck(const LoRaPacket &pkt)
@@ -328,17 +324,17 @@ private:
         char successLog[200];
         if (uniqueCount != count)
         {
-            snprintf(successLog, sizeof(successLog), "📩 BULK ACK: %u IDs [%s] → %u unique [%s] from device %u (filtered %u duplicates)", count, idList.c_str(), uniqueCount, uniqueIdList.c_str(), pkt.senderId, count - uniqueCount);
+            snprintf(successLog, sizeof(successLog), "📩 BULK ACK: %u IDs [%s] → %u unique [%s] from device %u (filtered %u duplicates)", count, idList.c_str(), uniqueCount, uniqueIdList.c_str(), pkt.getSenderId(), count - uniqueCount);
         }
         else
         {
-            snprintf(successLog, sizeof(successLog), "📩 BULK ACK received: %u IDs [%s] from device %u",  count, idList.c_str(), pkt.senderId);
+            snprintf(successLog, sizeof(successLog), "📩 BULK ACK received: %u IDs [%s] from device %u",  count, idList.c_str(), pkt.getSenderId());
         }
         putToLogBuffer(String(successLog));
 
         for (uint8_t i = 0; i < uniqueCount; i++) // Обрабатываем только уникальные ID
         {
-            handleSingleAck(uniqueIds[i], pkt.senderId, pkt.packetType);
+            handleSingleAck(uniqueIds[i], pkt.getSenderId(), pkt.packetType);
         }
     }
 
@@ -462,7 +458,7 @@ private:
                 radio.startReceive();
 
                 // Валидация целостности пакета
-                if (pkt.senderId == myDeviceId)
+                if (pkt.getSenderId() == myDeviceId)
                 {
                     if (radioSemaphore)
                         xSemaphoreGive(radioSemaphore);
@@ -486,7 +482,7 @@ private:
                     payloadHex += "...";
                 }
 
-                snprintf(s, sizeof(s), "[RX:%d][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u", getCurrentProfileIndex(), len, t1 - t0, pkt.senderId, pkt.receiverId, pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                snprintf(s, sizeof(s), "[RX:%d][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u", getCurrentProfileIndex(), len, t1 - t0, pkt.getSenderId(), pkt.getReceiverId(), pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                 fullLog = String(s) + ", pl=" + payloadHex;
 
                 if (pkt.packetType == CMD_ACK)
@@ -550,7 +546,7 @@ private:
                 }
 
                 // Log packet details BEFORE transmission
-                snprintf(s, sizeof(s),"[TX:%d][L:%d]→[%u->%u], T=[%c/%d], id=%u, plLen=%u ", getCurrentProfileIndex(), (int)len, pkt.senderId, pkt.receiverId, pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                snprintf(s, sizeof(s),"[TX:%d][L:%d]→[%u->%u], T=[%c/%d], id=%u, plLen=%u ", getCurrentProfileIndex(), (int)len, pkt.getSenderId(), pkt.getReceiverId(), pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                 String fullLog = String(s) + ", pl=" + payloadHex;
                 putToLogBuffer(fullLog);
                 
@@ -600,7 +596,7 @@ private:
                                 it->retries++;
                                 if (it->retries >= currentMaxRetries - 1)// Логируем только критические повторы
                                 {
-                                    snprintf(s, sizeof(s), "🔄Retry: id=%u #%u, T=%c, to=%u", it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.receiverId);
+                                    snprintf(s, sizeof(s), "🔄Retry: id=%u #%u, T=%c, to=%u", it->pkt.packetId, it->retries, it->pkt.packetType, it->pkt.getReceiverId());
                                     putToLogBuffer(String(s));
                                 }
                                 ++it;
@@ -612,7 +608,7 @@ private:
                         }
                         else
                         {
-                            snprintf(s, sizeof(s), "❌Drop: id=%u, T=%c, to=%u (max retries)", it->pkt.packetId, it->pkt.packetType, it->pkt.receiverId);
+                            snprintf(s, sizeof(s), "❌Drop: id=%u, T=%c, to=%u (max retries)", it->pkt.packetId, it->pkt.packetType, it->pkt.getReceiverId());
                             putToLogBuffer(String(s));
                             it = pending.erase(it);
                         }
@@ -846,7 +842,7 @@ public:
                 if (existingIt != pending.end())
                 {
                     char s[100];
-                    snprintf(s, sizeof(s), "⚠️ Duplicate packet ID detected: id=%u, type=%с, to=%u",frame.packetId, frame.packetType, frame.receiverId);
+                    snprintf(s, sizeof(s), "⚠️ Duplicate packet ID detected: id=%u, type=%с, to=%u",frame.packetId, frame.packetType, frame.getReceiverId());
                     putToLogBuffer(String(s));
                     existingIt->timestamp = millis(); // Обновляем timestamp существующего пакета вместо добавления дубликата
                     existingIt->retries = 0;

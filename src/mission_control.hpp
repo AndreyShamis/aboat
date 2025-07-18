@@ -405,6 +405,12 @@ public:
         Serial.println("║   L:P[0-12]   - Set profile (0-8=LoRa, 9-12=GFSK)              ║");
         Serial.println("║                 0=🛡️Max range, 8=🚀Fast LoRa, 12=🚀Max GFSK     ║");
         Serial.println("║   L:adapt     - Trigger adaptive LoRa                          ║");
+        Serial.println("║   L:A:0       - Disable adaptive switching (manual mode)       ║");
+        Serial.println("║   L:A:1       - Enable adaptive switching (auto mode)          ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ 🔧 Adaptive Control Examples:                                  ║");
+        Serial.println("║   L:A:0; L:6  - Lock to profile 6 (disable auto-switching)     ║");
+        Serial.println("║   L:A:1       - Re-enable auto profile optimization            ║");
         Serial.println("║                                                                  ║");
         Serial.println("║ 📋 Profile Details:                                            ║");
         Serial.println("║   LoRa Profiles (0-8): SF12→SF7, bandwidth 125→500kHz         ║");
