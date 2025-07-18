@@ -6,8 +6,8 @@
 #include "settings.h"
 #include "LoRaCore.hpp"
 #include "wifi_manager.hpp"
-
 #include "PacketAsaExchange.hpp"
+#include "DataPacket.hpp"  // 🚀 NEW: Support for structured data
 
 // -----------------------------------------------------------------------------
 // MissionControl
@@ -18,8 +18,8 @@
 class MissionControl : public LogInterface
 {
 public:
-    unsigned long lastPongHeartbeat = 0;    // время последней посылки
-    unsigned long nextPongInterval = 15000; // первый интервал (мс)
+    unsigned long lastPingHeartbeat = 0;    // время последней посылки heartbeat ping
+    unsigned long nextPingInterval = 15000; // первый интервал (мс)
     MissionControl()
     {
         loraComm = new LoRaCore(MY_DEVICE_ID, this);
@@ -74,14 +74,16 @@ public:
             }
         }
 
-        // 🕒 Проверка потери пинга
-        if (millis() - lastPingTime > checkInterval && currentProfileIndex > 0)
+        // 🕒 Проверка потери связи с лодкой (по любой активности, не только пингам)
+        if (millis() - lastBoatActivity > checkInterval && currentProfileIndex > 0)
         {
+            unsigned long timeSinceActivity = (millis() - lastBoatActivity) / 1000;
+            addLog("⚠️ No boat activity for " + String(timeSinceActivity) + " seconds (threshold: " + 
+                   String(checkInterval / 1000) + "s). Degrading to profile 0 for maximum range.");
+            
             currentProfileIndex = 0;
             const auto &profile = loraProfiles[currentProfileIndex];
 
-            addLog("⚠️ No ping in " + String(checkInterval / 1000) + " sec. Degrading LoRa profile to index " + String(currentProfileIndex) +
-                   " (SF=" + profile.spreadingFactor + ", BW=" + profile.bandwidth + ", CR=" + profile.codingRate + ")");
             PacketAsaApprove resp;
             resp.packetType = CMD_REPOSNCE_ASA;
             resp.packetId = nextPacketId++;
@@ -91,13 +93,53 @@ public:
             vTaskDelay(pdMS_TO_TICKS(1000));
             applyProfile(currentProfileIndex);
 
-            lastPingTime = millis(); // Сбросим таймер
+            lastBoatActivity = millis(); // 🚀 FIX: Сбрасываем таймер активности лодки
+            
+            // 🚀 FIX: Сбрасываем флаги пингов
+            firstPingSent = false;
+            secondPingSent = false;
+            waitingForPong = false;
         }
         else
         {
-            if (millis() - lastPongHeartbeat >= nextPongInterval)
+            // 🚀 NEW: Двойная стратегия пингов - 35 и 45 секунд
+            unsigned long timeSinceLastActivity = millis() - lastBoatActivity;
+            
+            // Первый пинг на 35 секунде
+            if (timeSinceLastActivity > FIRST_PING_INTERVAL && !firstPingSent) {
+                sendPingToBoat();
+                lastPingSent = millis();
+                waitingForPong = true;
+                firstPingSent = true;
+                addLog("[MC] 🔍 No boat activity for " + String(timeSinceLastActivity/1000) + 
+                       "s, sending FIRST PING to check connection");
+            }
+            
+            // Второй пинг на 45 секунде (если первый не получил ответ)
+            if (timeSinceLastActivity > SECOND_PING_INTERVAL && firstPingSent && !secondPingSent) {
+                sendPingToBoat();
+                lastPingSent = millis();
+                waitingForPong = true;
+                secondPingSent = true;
+                addLog("[MC] 🔍 No boat activity for " + String(timeSinceLastActivity/1000) + 
+                       "s, sending SECOND PING to check connection");
+            }
+            
+            // Если ждем понг больше 10 секунд - считаем лодку недоступной
+            if (waitingForPong && (millis() - lastPingSent > PONG_TIMEOUT)) {
+                String pingType = secondPingSent ? "second" : "first";
+                addLog("[MC] ⚠️ " + pingType + " PING timeout! No PONG response from boat.");
+                waitingForPong = false;
+                boatIsActive = false;
+                
+                // 🚀 FIX: Не сбрасываем флаги пингов, пусть система дойдет до 60 секунд
+                // и сделает деградацию профиля если лодка действительно недоступна
+            }
+            
+            // Обычные heartbeat пинги
+            if (millis() - lastPingHeartbeat >= nextPingInterval)
             {
-                sendHeartbeatPong();
+                sendHeartbeatPing();
             }
         }
         
@@ -128,19 +170,31 @@ public:
         // 👇 Передаём стабильный буфер
         loraComm->sendPacketBase(BOAT_DEVICE_ID, cmd, tempBuf);
     }
-    void sendHeartbeatPong()
+    void sendHeartbeatPing()
     {
-        PacketCommand pong{};
-        pong.packetType = CMD_PONG;
-        pong.packetId = nextPacketId++;
-        pong.payloadLen = 0;
+        PacketCommand ping{};
+        ping.packetType = CMD_PING;
+        ping.packetId = nextPacketId++;
+        ping.payloadLen = 0;
 
-        loraComm->sendPacketBase(BOAT_DEVICE_ID, pong, nullptr, false);
-        addLog(F("[CMD] Heartbeat PONG sent"));
+        loraComm->sendPacketBase(BOAT_DEVICE_ID, ping, nullptr, false);
+        addLog(F("[MC] 💓 Heartbeat PING sent to boat (expecting PONG)"));
 
         // cформируем новый случайный интервал 10–15 с
-        nextPongInterval = random(10000UL, 15001UL);
-        lastPongHeartbeat = millis();
+        nextPingInterval = random(10000UL, 15001UL);
+        lastPingHeartbeat = millis();
+    }
+    
+    // 🚀 NEW: Send ping to boat for active connection checking
+    void sendPingToBoat()
+    {
+        PacketCommand ping{};
+        ping.packetType = CMD_PING;
+        ping.packetId = nextPacketId++;
+        ping.payloadLen = 0;
+
+        loraComm->sendPacketBase(BOAT_DEVICE_ID, ping, nullptr, false);
+        addLog("[MC] 🏓 Connection check PING sent to boat (expecting PONG)");
     }
 
     void addLog(const String &msg) override
@@ -431,14 +485,30 @@ public:
         Serial.println("║   W:C               - Clear waypoints                          ║");
         Serial.println("║   W:status          - Web interface status                     ║");
         Serial.println("║                                                                  ║");
+        Serial.println("║ 📦 Structured Data Commands (BS:) - NEW BoatSettings API       ║");
+        Serial.println("║   BS:H      - Request structured heartbeat (basic status)      ║");
+        Serial.println("║   BS:F      - Request full structured status                   ║");
+        Serial.println("║   BS:G      - Request GPS data only                            ║");
+        Serial.println("║   BS:M      - Request motor status only                        ║");
+        Serial.println("║   BS:S      - Request sensor data only (temp, battery)         ║");
+        Serial.println("║   BS:L      - Request LoRa status only                         ║");
+        Serial.println("║   BS:N      - Request navigation status only                   ║");
+        Serial.println("║   BS:SYS    - Request system info (uptime, memory, health)     ║");
+        Serial.println("║   BS:ON     - Enable structured data mode                      ║");
+        Serial.println("║   BS:OFF    - Disable structured data mode (use JSON)          ║");
+        Serial.println("║   BS:PING   - Send manual ping to boat                         ║");
+        Serial.println("║   BS:RSSI   - Request RSSI report from boat                    ║");
+        Serial.println("║                                                                  ║");
         Serial.println("║ ⚙️ Legacy Commands:                                            ║");
         Serial.println("║   M:120     - Set motor power                                   ║");
         Serial.println("║   E         - Emergency stop                                    ║");
-        Serial.println("║   R         - Request telemetry                                ║");
-        Serial.println("║   P         - Send ping                                        ║");
+        Serial.println("║   R         - Request telemetry (old JSON system)              ║");
+        Serial.println("║   P         - Send ping (legacy command)                       ║");
         Serial.println("║   P:1-P:100 - Oil pump control (1-100% power)                  ║");
         Serial.println("║   SCAN      - Spectrum scan (CSV output)                       ║");
         Serial.println("║   profiles  - Show all available radio profiles                ║");
+        Serial.println("║   status    - Show connection status and boat diagnostics      ║");
+        Serial.println("║   ping      - Send manual ping to check boat connection        ║");
         Serial.println("║   demo      - Run demo commands sequence                       ║");
         Serial.println("║   help      - Show this help                                   ║");
         Serial.println("║                                                                  ║");
@@ -537,11 +607,89 @@ public:
         else if (cmd == "P") {
             sendPingCommand();
         }
+        else if (cmd.startsWith("BS:")) {
+            // 📦 NEW: Structured Data Commands for BoatSettings
+            String param = cmd.substring(3);
+            
+            if (param == "H") {
+                // Request structured heartbeat
+                sendCommandString("DM:H");
+                addLog("[MC] 📦 Requested structured heartbeat");
+            }
+            else if (param == "F") {
+                // Request full structured status
+                sendCommandString("DM:F");
+                addLog("[MC] 📦 Requested full structured status");
+            }
+            else if (param == "G") {
+                // Request GPS data only
+                sendCommandString("DM:G");
+                addLog("[MC] 📦 Requested GPS data");
+            }
+            else if (param == "M") {
+                // Request motor status only
+                sendCommandString("DM:M");
+                addLog("[MC] 📦 Requested motor status");
+            }
+            else if (param == "S") {
+                // Request sensor data only
+                sendCommandString("DM:SENS");
+                addLog("[MC] 📦 Requested sensor data");
+            }
+            else if (param == "L") {
+                // Request LoRa status only
+                sendCommandString("DM:L");
+                addLog("[MC] 📦 Requested LoRa status");
+            }
+            else if (param == "N") {
+                // Request navigation status only
+                sendCommandString("DM:N");
+                addLog("[MC] 📦 Requested navigation status");
+            }
+            else if (param == "SYS") {
+                // Request system info
+                sendCommandString("DM:SYS");
+                addLog("[MC] 📦 Requested system info");
+            }
+            else if (param == "ON") {
+                // Enable structured data mode
+                sendCommandString("DM:S");
+                addLog("[MC] 📦 Enabled structured data mode");
+            }
+            else if (param == "OFF") {
+                // Disable structured data mode (use JSON)
+                sendCommandString("DM:J");
+                addLog("[MC] 📦 Switched to JSON mode");
+            }
+            else if (param == "PING") {
+                // Send manual ping
+                sendPingCommand();
+                addLog("[MC] 🔄 Manual ping sent");
+            }
+            else if (param == "RSSI") {
+                // Request RSSI report
+                sendCommandString("RSSI");
+                addLog("[MC] 📶 Requested RSSI report");
+            }
+            else {
+                addLog("[MC] ❌ Unknown BS command: " + param + ". Available: H,F,G,M,S,L,N,SYS,ON,OFF,PING,RSSI");
+            }
+        }
         else if (cmd == "help" || cmd == "HELP" || cmd == "h" || cmd == "H") {
             printHelp();
         }
         else if (cmd == "profiles" || cmd == "PROFILES") {
             printProfileInfo();
+        }
+        else if (cmd == "status" || cmd == "STATUS") {
+            printConnectionStatus();
+        }
+        else if (cmd == "ping" || cmd == "PING") {
+            // Manual ping to boat
+            sendPingToBoat();
+            lastPingSent = millis();
+            waitingForPong = true;
+            addLog("[MC] 🏓 Manual PING sent to boat (expecting PONG)");
         }
         else if (cmd == "demo") {
             // Quick demo commands - оптимизированная версия
@@ -579,13 +727,52 @@ public:
             processSerialCommand(input);
         }
     }
+    
+    // 🚀 NEW: Connection status diagnostics
+    void printConnectionStatus()
+    {
+        unsigned long timeSinceActivity = millis() - lastBoatActivity;
+        Serial.println("\n╔══════════════════════════════════════════════════════════════════╗");
+        Serial.println("║                       CONNECTION STATUS                          ║");
+        Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+        Serial.println("║ Boat Status: " + String(boatIsActive ? "🟢 ACTIVE" : "🔴 INACTIVE") + String(boatIsActive ? "                                      " : "                                    ") + "║");
+        Serial.println("║ Last Activity: " + String(timeSinceActivity/1000) + " seconds ago" + String("                                ").substring(0, 34 - String(timeSinceActivity/1000).length()) + "║");
+        Serial.println("║ Waiting for Pong: " + String(waitingForPong ? "YES" : "NO") + String(waitingForPong ? "                                  " : "                                   ") + "║");
+        if (waitingForPong) {
+            unsigned long waitTime = millis() - lastPingSent;
+            Serial.println("║ Ping Wait Time: " + String(waitTime) + "ms" + String("                                    ").substring(0, 40 - String(waitTime).length()) + "║");
+        }
+        Serial.println("║ Current Profile: " + String(currentProfileIndex) + String("                                      ").substring(0, 38 - String(currentProfileIndex).length()) + "║");
+        Serial.println("║ Last RSSI: " + String(lastRSSI) + "dBm" + String("                                        ").substring(0, 42 - String(lastRSSI).length()) + "║");
+        Serial.println("║ Battery: " + String(lastBatteryPercent) + "%" + String("                                            ").substring(0, 46 - String(lastBatteryPercent).length()) + "║");
+        Serial.println("║ System Health: " + String(lastSystemHealth) + "%" + String("                                      ").substring(0, 40 - String(lastSystemHealth).length()) + "║");
+        Serial.println("╚══════════════════════════════════════════════════════════════════╝");
+    }
 
 private:
     LoRaCore *loraComm;
     PacketId_t nextPacketId = 0;
-    unsigned long lastPingTime = 0;
+    unsigned long lastBoatActivity = 0;  // 🚀 FIX: Время последней активности лодки (любой пакет)
     int currentProfileIndex = 0;
-    unsigned long checkInterval = 45 * 1000;
+    unsigned long checkInterval = 60 * 1000; // 🚀 FIX: Увеличено с 45 до 60 секунд
+
+    // 🚀 NEW: Boat state tracking (для структурированных данных)
+    unsigned long lastPacketReceived = 0;
+    bool boatIsActive = false;
+    GPSPoint lastKnownBoatPosition;
+    int8_t lastRSSI = -120;
+    uint8_t lastBatteryPercent = 0;
+    uint8_t lastSystemHealth = 100;
+    bool useStructuredData = true; // Использовать структурированные данные
+    
+    // 🚀 NEW: Active connection monitoring with double ping strategy
+    unsigned long lastPingSent = 0;
+    bool waitingForPong = false;
+    bool firstPingSent = false;   // 🚀 NEW: Отслеживаем первый пинг на 35 сек
+    bool secondPingSent = false;  // 🚀 NEW: Отслеживаем второй пинг на 45 сек
+    static constexpr unsigned long FIRST_PING_INTERVAL = 35000;  // 35 секунд → первый пинг
+    static constexpr unsigned long SECOND_PING_INTERVAL = 45000; // 45 секунд → второй пинг
+    static constexpr unsigned long PONG_TIMEOUT = 10000; // 10 секунд ждем понг
 
     // Система агрегированных ACK
     PacketBulkAck pendingBulkAck;
@@ -693,6 +880,9 @@ private:
             addLog("[MC] 🧭 Navigation response: " + response.substring(2));
         } else if (response.startsWith("W:")) {
             addLog("[MC] 🌐 Web response: " + response.substring(2));
+        } else if (response.startsWith("DM:")) {
+            // 🚀 NEW: Handle structured data mode responses
+            addLog("[MC] 📦 StructData response: " + response.substring(3));
         } else {
             addLog("[MC] ❓ Unknown response format: " + response);
         }
@@ -702,7 +892,28 @@ private:
                       const PacketBase &hdr,
                       const uint8_t *buf)
     {
-        lastPingTime = millis(); // Обновляем время последнего пинга
+        // 🚀 FIX: Обновляем время активности лодки при получении ЛЮБОГО пакета от неё
+        if (sender == BOAT_DEVICE_ID) {
+            lastBoatActivity = millis();
+            boatIsActive = true;
+            
+            // 🚀 FIX: Сбрасываем флаги пингов при любой активности лодки
+            if (firstPingSent || secondPingSent) {
+                addLog("[MC] 🚤 Boat activity detected - resetting ping state");
+                firstPingSent = false;
+                secondPingSent = false;
+                waitingForPong = false;
+            }
+            
+            // Логируем каждый 10-й пакет от лодки для мониторинга активности
+            static uint8_t packetCounter = 0;
+            packetCounter++;
+            if (packetCounter % 10 == 0) {
+                addLog("[MC] 🚤 Boat activity: packet " + String(packetCounter) + 
+                       ", type=" + String((char)hdr.packetType) + ", id=" + String(hdr.packetId));
+            }
+        }
+        
         float snr = loraComm->getRadio().getSNR();
         float rssi = loraComm->getRadio().getRSSI();
         addLog("profile:" + String(currentProfileIndex) + " .RSSI:" + String(rssi) + "dBm, SNR=" + String(snr, 1) + "dB");
@@ -710,6 +921,8 @@ private:
         {
             case CMD_BULK_ACK:
             {
+                // 🚀 FIX: BULK_ACK тоже является активностью лодки (обрабатывается выше в общем блоке)
+                
                 // Обработка bulk ACK от лодки
                 if (hdr.payloadLen < sizeof(uint8_t)) {
                     addLog("[MC] ⚠️ Invalid BULK ACK packet size");
@@ -760,6 +973,9 @@ private:
                 addLog("1 [MC] Invalid ASA packet received");
                 break;
             }
+            
+            // 🚀 FIX: ASA пакеты тоже являются активностью лодки (обрабатывается выше в общем блоке)
+            
             // Ответим только на CMD_REQUEST_ASA
             if (hdr.packetType == CMD_REQUEST_ASA)
             {
@@ -796,9 +1012,30 @@ private:
             pong.payloadLen = 0;
             // loraComm->sendPacket(pong, sender);
             loraComm->sendPacketBase(sender, pong, nullptr, false);
-            addLog("Pong->BOAT");
+            addLog("[MC] 📥 Received PING from boat, sent PONG response");
             break;
         }
+        
+        case CMD_PONG:
+        {
+            // 🚀 NEW: Handle pong responses to our pings
+            if (waitingForPong) {
+                unsigned long pingTime = millis() - lastPingSent;
+                String pingType = secondPingSent ? "second" : "first";
+                addLog("[MC] ✅ Boat responded to " + pingType + " PING with PONG in " + String(pingTime) + "ms - connection OK");
+                waitingForPong = false;
+                boatIsActive = true;
+                // 🚀 FIX: Сбрасываем время последней активности при получении понга
+                lastBoatActivity = millis();
+                // 🚀 FIX: Сбрасываем флаги пингов при успешном ответе
+                firstPingSent = false;
+                secondPingSent = false;
+            } else {
+                addLog("[MC] 📥 Received heartbeat PONG from boat (not in response to our PING)");
+            }
+            break;
+        }
+        
         case CMD_RSSI_REPORT:
         {
             addLog("Got CMD_RSSI_REPORT");
@@ -833,6 +1070,52 @@ private:
             // Engine information response
             String engineInfo(reinterpret_cast<const char *>(buf), hdr.payloadLen);
             addLog("[MC] ⚙️ Engine info: " + engineInfo);
+            break;
+        }
+
+        // 🚀 NEW: Structured data packet handling
+        case CMD_STRUCTURED_HEARTBEAT:
+        {
+            UltraCompactHeartbeat hb;
+            if (StructuredDataManager::parseHeartbeat(buf, hdr.payloadLen, hb)) {
+                // Обновляем последнее время получения от лодки
+                lastPacketReceived = millis();
+                boatIsActive = true;
+                
+                // Отображаем компактную информацию
+                addLog("[MC] 📡 Boat HB: " + String(hb.latitude, 6) + "," + String(hb.longitude, 6) + 
+                       " P:" + String(hb.loraProfile) + 
+                       " RSSI:" + String(hb.rssi) + 
+                       " Bat:" + String(hb.batteryPercent) + "%");
+                       
+                // Сохраняем состояние лодки (если нужно)
+                lastKnownBoatPosition.latitude = hb.latitude;
+                lastKnownBoatPosition.longitude = hb.longitude;
+                lastRSSI = hb.rssi;
+                lastBatteryPercent = hb.batteryPercent;
+                lastSystemHealth = hb.systemHealth;
+                
+            } else {
+                addLog("[MC] ❌ Failed to parse ultra heartbeat");
+            }
+            break;
+        }
+        case CMD_STRUCTURED_GPS:
+        {
+            GPSStatus gps;
+            if (StructuredDataManager::parseGPS(buf, hdr.payloadLen, gps)) {
+                addLog("[MC] 📍 GPS: " + gps.toString());
+            } else {
+                addLog("[MC] ❌ Failed to parse GPS data");
+            }
+            break;
+        }
+        case CMD_STRUCTURED_MOTORS:
+        case CMD_STRUCTURED_SENSORS:
+        case CMD_STRUCTURED_NAVIGATION:
+        case CMD_STRUCTURED_FRAGMENT:
+        {
+            addLog("[MC] 📦 Struct data type: " + String((char)hdr.packetType) + ", size: " + String(hdr.payloadLen));
             break;
         }
 

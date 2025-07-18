@@ -29,6 +29,9 @@
 #include "boat_utils.hpp"
 #include "auto_navigation.hpp"
 #include "stack_monitor.hpp"
+#include "GPSPoint.hpp"
+#include "BoatSettings.hpp"
+#include "DataPacket.hpp"
 
 using namespace ArduinoJson;
 
@@ -80,6 +83,16 @@ public:
 
     TaskHandle_t sendStatusTaskHandle = nullptr;
     bool statusTaskRunning = false;
+
+    // 🚀 NEW: Structured data transmission system
+    BoatSettings currentBoatSettings;      // Текущее состояние лодки
+    unsigned long lastHeartbeatSent = 0;   // Время последнего heartbeat
+    unsigned long lastFullStatusSent = 0;  // Время последнего полного статуса
+    unsigned long lastDataUpdate = 0;      // Время последнего обновления данных
+    bool useStructuredData = true;         // Флаг использования новой системы
+    static constexpr unsigned long HEARTBEAT_INTERVAL = 5000;     // 5 секунд
+    static constexpr unsigned long FULL_STATUS_INTERVAL = 30000;  // 30 секунд
+    static constexpr unsigned long DATA_UPDATE_INTERVAL = 1000;   // 1 секунда
 
     bool waitingForASAAck = false;
     bool asaActive = false;
@@ -529,7 +542,92 @@ public:
                                     // Send response back to MissionControl
                                     sendResponseToMissionControl(response); });
 
-        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control), N (navigation), W (waypoints), T (time)");
+        // 🚀 NEW: Data transmission mode control
+        parser.registerCommand("DM", [this](const String &arg)
+                               {
+                                    String response = "DM:";
+                                    if (arg == "S" || arg == "structured") {
+                                        useStructuredData = true;
+                                        addLog("📦 Switched to structured data transmission");
+                                        response += "structured data enabled";
+                                    } else if (arg == "J" || arg == "json") {
+                                        useStructuredData = false;
+                                        addLog("📄 Switched to JSON data transmission");
+                                        response += "JSON data enabled";
+                                    } else if (arg == "H" || arg == "heartbeat") {
+                                        if (useStructuredData) {
+                                            sendStructuredHeartbeat();
+                                            response += "structured heartbeat sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "F" || arg == "full") {
+                                        if (useStructuredData) {
+                                            sendStructuredFullStatus();
+                                            response += "full structured status sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "G" || arg == "gps") {
+                                        if (useStructuredData) {
+                                            sendStructuredGPS();
+                                            response += "GPS data sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "M" || arg == "motors") {
+                                        if (useStructuredData) {
+                                            sendStructuredMotors();
+                                            response += "motor data sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "SENS" || arg == "sensors") {
+                                        if (useStructuredData) {
+                                            sendStructuredSensors();
+                                            response += "sensor data sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "L" || arg == "lora") {
+                                        if (useStructuredData) {
+                                            sendStructuredLoRaStatus();
+                                            response += "LoRa status sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "N" || arg == "navigation") {
+                                        if (useStructuredData) {
+                                            sendStructuredNavigation();
+                                            response += "navigation data sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "SYS" || arg == "system") {
+                                        if (useStructuredData) {
+                                            sendStructuredSystemInfo();
+                                            response += "system info sent";
+                                        } else {
+                                            response += "structured mode disabled";
+                                        }
+                                    } else if (arg == "?") {
+                                        response += String(useStructuredData ? "structured" : "json") + 
+                                                   ", HB:" + String((millis() - lastHeartbeatSent)/1000) + "s ago" +
+                                                   ", Full:" + String((millis() - lastFullStatusSent)/1000) + "s ago";
+                                    } else {
+                                        response += "Usage: DM:[S|J|H|F|G|M|SENS|L|N|SYS|?] (Structured/Json/Heartbeat/Full/Gps/Motors/Sensors/LoRa/Nav/System/status)";
+                                    }
+                                    
+                                    // Send response back to MissionControl
+                                    sendResponseToMissionControl(response); });
+
+        // 📶 RSSI Report command
+        parser.registerCommand("RSSI", [this](const String &arg)
+                               {
+                                   sendRssiReport(MISSION_CONTROL_ID);
+                                   addLog("📶 RSSI report sent on request"); });
+
+        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control), N (navigation), W (waypoints), T (time), DM (data mode - structured data commands), RSSI (signal report)");
 
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
@@ -726,12 +824,13 @@ public:
             oilPump.setSpeed(percent);
         }
 
-        static unsigned long lastRssiSent = 0;
-        if (millis() - lastRssiSent > RSSI_REPORT_INTERVAL)
-        {
-            sendRssiReport(MISSION_CONTROL_ID); // или другой ID
-            lastRssiSent = millis();
-        }
+        // 📡 RSSI отчёты отправляются ТОЛЬКО по запросу, не автоматически
+        // static unsigned long lastRssiSent = 0;
+        // if (millis() - lastRssiSent > RSSI_REPORT_INTERVAL)
+        // {
+        //     sendRssiReport(MISSION_CONTROL_ID); // или другой ID
+        //     lastRssiSent = millis();
+        // }
         // Показываем системное время раз в 5 секунд
         static unsigned long lastPrint = 0;
         if (millis() - lastPrint > BOAT_TMR_STSTEM_PRINT_TIME)
@@ -741,16 +840,18 @@ public:
             addLog("System time:" + String(now));
         }
 
-        if (millis() - lastPingSent >= PING_INTERVAL && !waitingForASAAck)
-        {
-            PacketBase ping{};
-            ping.packetType = CMD_PING;
-            ping.packetId = nextPacketId++;
-            ping.payloadLen = 0;
-            loraComm->sendPacketBase(MISSION_CONTROL_ID, ping, nullptr, false);
-            addLog("[PROF:" + String(loraComm->getCurrentProfileIndex()) + "] 🔄 Ping → MC");
-            lastPingSent = millis();
-        }
+        // 🔄 Ping'и отправляются только если Mission Control активен и разрешены автоматические пинги
+        // Отключено по умолчанию - отправка только по запросу
+        // if (missionCOntrolIsActivae && millis() - lastPingSent >= PING_INTERVAL && !waitingForASAAck)
+        // {
+        //     PacketBase ping{};
+        //     ping.packetType = CMD_PING;
+        //     ping.packetId = nextPacketId++;
+        //     ping.payloadLen = 0;
+        //     loraComm->sendPacketBase(MISSION_CONTROL_ID, ping, nullptr, false);
+        //     addLog("[PROF:" + String(loraComm->getCurrentProfileIndex()) + "] 🔄 Ping → MC");
+        //     lastPingSent = millis();
+        // }
 
 
         // Синхронизация при первом валидном значении GPS времени
@@ -876,9 +977,11 @@ public:
         // Проверяем, не нужно ли отправить накопленные ACK
         checkBulkAckTimeout();
 
+        // 🚀 NEW: Structured data transmission
+        // processStructuredDataTransmission();
+
         // Performance tracking
         unsigned long keepDuration = millis() - keepStartTime;
-        performanceMetrics.recordKeepCycle(keepDuration);
 
         // Warn if keep() cycle is taking too long
         if (keepDuration > 50)
@@ -1040,6 +1143,17 @@ public:
             addLog("🔍 Profile Selection: RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) + "dB");
         }
 
+        // 🔒 ЗАЩИТА от экстремальных значений RSSI
+        if (rssi < -130.0f || rssi > 0.0f) {
+            if (verbose) {
+                addLog("⚠️ Invalid RSSI " + String(rssi, 1) + "dBm, using cached value");
+            }
+            rssi = PongRssi; // Используем последний валидный RSSI
+        }
+
+        int bestProfileByRssi = 0;      // Лучший профиль по RSSI
+        int bestProfileByRssiSnr = 0;   // Лучший профиль по RSSI+SNR
+
         // Используем новую таблицу с поддержкой FSK и SNR
         for (size_t i = 0; i < rssiProfileCount; ++i)
         {
@@ -1049,27 +1163,52 @@ public:
                        " → profile " + String(rssiToProfileTable[i].profileIndex));
             }
 
+            // Проверяем только по RSSI (для fallback)
+            if (rssi >= rssiToProfileTable[i].minRssi) {
+                bestProfileByRssi = rssiToProfileTable[i].profileIndex;
+            }
+
+            // Проверяем по RSSI+SNR (идеальный случай)
             if (rssi >= rssiToProfileTable[i].minRssi &&
                 snr >= rssiToProfileTable[i].minSnr)
             {
-
-                int suggestedProfile = rssiToProfileTable[i].profileIndex;
+                bestProfileByRssiSnr = rssiToProfileTable[i].profileIndex;
                 
                 if (verbose) {
-                    String modeStr = (loraProfiles[suggestedProfile].mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
-                    addLog("✅ MATCH! RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) +
-                           "dB → профиль " + String(suggestedProfile) + " (" + modeStr + ")");
+                    String modeStr = (loraProfiles[bestProfileByRssiSnr].mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
+                    addLog("✅ PERFECT MATCH! RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) +
+                           "dB → профиль " + String(bestProfileByRssiSnr) + " (" + modeStr + ")");
                 }
 
-                return suggestedProfile;
+                return bestProfileByRssiSnr;
             }
         }
 
-        // Fallback: возвращаем самый надёжный профиль
-        if (verbose) {
-            addLog("❌ No matches found, fallback to profile 0");
+        // 🛡️ УМНЫЙ FALLBACK: Используем профиль на основе RSSI, но не хуже текущего на 2 позиции
+        uint8_t currentProfile = loraComm ? loraComm->getCurrentProfileIndex() : 0;
+        
+        // Если SNR плохой, но RSSI хороший - делаем консервативный выбор
+        if (bestProfileByRssi > 0 && bestProfileByRssi < currentProfile) {
+            // Не деградируем больше чем на 2 профиля за раз при плохом SNR
+            int conservativeProfile = max(currentProfile - 2, bestProfileByRssi);
+            
+            if (verbose) {
+                addLog("🛡️ CONSERVATIVE: Bad SNR but good RSSI → profile " + String(conservativeProfile) + 
+                       " (was " + String(bestProfileByRssi) + " by RSSI, current " + String(currentProfile) + ")");
+            }
+            
+            return conservativeProfile;
         }
-        return 0;
+
+        // Fallback: используем лучший по RSSI, но не хуже профиля 2
+        int fallbackProfile = max(bestProfileByRssi, 2);
+        
+        if (verbose) {
+            addLog("⚠️ SNR-based fallback to profile " + String(fallbackProfile) + 
+                   " (RSSI-based: " + String(bestProfileByRssi) + ")");
+        }
+        
+        return fallbackProfile;
     }
 
     void applyProfile(uint8_t idx)
@@ -1698,6 +1837,233 @@ private:
     bool missionCOntrolIsActivae = false;
     bool allowAdaptiveLoraSwitch = true; // Разрешение на автоматическое переключение профилей
 
+    // 🚀 Command deduplication system
+    struct LastCommand {
+        PacketId_t packetId = 0;
+        unsigned long timestamp = 0;
+        String command = "";
+    } lastProcessedCommand;
+    static constexpr unsigned long COMMAND_DEDUP_TIMEOUT_MS = 2000; // 2 секунды для дедупликации
+
+    // 🚀 NEW: Structured data management functions
+    void updateBoatSettings() {
+        unsigned long now = millis();
+        if (now - lastDataUpdate < DATA_UPDATE_INTERVAL) {
+            return;
+        }
+        
+        currentBoatSettings.updateTimestamp();
+        
+        // GPS данные
+        if (gnss.hasValidFix()) {
+            currentBoatSettings.gps.position.latitude = gnss.getLatitude();
+            currentBoatSettings.gps.position.longitude = gnss.getLongitude();
+            currentBoatSettings.gps.position.altitude = 0.0f; // TODO: добавить altitude в GNSS
+            currentBoatSettings.gps.position.timestamp = now;
+            currentBoatSettings.gps.satelliteCount = gnss.getSatelliteCount();
+            currentBoatSettings.gps.setFixQuality(GPSStatus::GPS_FIX); // Используем setter
+            currentBoatSettings.gps.hasFix = gnss.hasValidFix();
+        }
+        
+        // Моторы - используем текущие значения или заглушки
+        currentBoatSettings.motors.leftPower = 0;  // TODO: добавить API в MotorEngineControl
+        currentBoatSettings.motors.rightPower = 0; // TODO: добавить API в MotorEngineControl
+        currentBoatSettings.motors.rudderAngle = rudder.getCurrentAngle();
+        currentBoatSettings.motors.emergencyStop = false; // TODO: реализовать emergency stop
+        
+        // LoRa статус
+        if (loraComm) {
+            currentBoatSettings.lora.currentProfile = loraComm->getCurrentProfileIndex();
+            currentBoatSettings.lora.rssi = loraComm->getRadio().getRSSI();
+            currentBoatSettings.lora.snr = loraComm->getRadio().getSNR();
+            currentBoatSettings.lora.adaptiveMode = allowAdaptiveLoraSwitch;
+            currentBoatSettings.lora.missionControlConnected = missionCOntrolIsActivae;
+            currentBoatSettings.lora.lastPacketTime = lastPacketReceived;
+        }
+        
+        // Датчики и температуры
+        currentBoatSettings.sensors.motor1Temp = temps.get(MOTOR1);
+        currentBoatSettings.sensors.motor2Temp = temps.get(MOTOR2);
+        currentBoatSettings.sensors.radiatorTemp = temps.get(MOTOR_RAD);
+        currentBoatSettings.sensors.oilTemp = temps.get(OIL);
+        currentBoatSettings.sensors.ambientTemp = temps.get(ENV);
+        currentBoatSettings.sensors.batteryVoltage = battery.getVoltage();
+        currentBoatSettings.sensors.batteryCurrent = 0.0f; // TODO: реализовать ток батареи
+        currentBoatSettings.sensors.batteryPercent = (uint8_t)((battery.getVoltage() - 11.0f) / (12.6f - 11.0f) * 100.0f); // Примерная формула
+        
+        // Навигация
+        currentBoatSettings.navigation.navigationActive = false; // TODO: проверить AutoNavigation API
+        currentBoatSettings.navigation.mode = NavigationStatus::MANUAL;
+        
+        // Системная информация
+        currentBoatSettings.uptime = millis() / 1000;
+        currentBoatSettings.freeHeap = ESP.getFreeHeap();
+        currentBoatSettings.systemHealth = calculateSystemHealth();
+        
+        lastDataUpdate = now;
+    }
+    
+    uint8_t calculateSystemHealth() {
+        uint8_t health = 100;
+        
+        // Снижаем здоровье системы при различных проблемах
+        if (currentBoatSettings.sensors.batteryVoltage < 11.0f) health -= 30;
+        if (currentBoatSettings.sensors.motor1Temp > 80.0f) health -= 20;
+        if (currentBoatSettings.sensors.motor2Temp > 80.0f) health -= 20;
+        if (!currentBoatSettings.gps.hasFix) health -= 15;
+        if (!currentBoatSettings.lora.missionControlConnected) health -= 10;
+        if (currentBoatSettings.freeHeap < 50000) health -= 15;
+        
+        return max(0, (int)health);
+    }
+    
+    void sendStructuredHeartbeat() {
+        if (!useStructuredData || !loraComm) return;
+        
+        updateBoatSettings();
+        
+        // Используем новую систему структурированных данных
+        PacketBase packetBase;
+        packetBase.packetId = nextPacketId++;
+        
+        uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
+        size_t payloadSize;
+        
+        if (StructuredDataManager::createHeartbeatPacket(currentBoatSettings, packetBase, payload, payloadSize)) {
+            loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
+            addLog("📡 Structured Heartbeat sent: " + String(payloadSize) + " bytes, Health:" + String(currentBoatSettings.systemHealth) + "%");
+            lastHeartbeatSent = millis(); // Обновляем время для статистики
+        }
+    }
+    
+    void sendStructuredFullStatus() {
+        if (!useStructuredData || !loraComm) return;
+        
+        updateBoatSettings();
+        
+        // Отправляем отдельные компоненты системы
+        sendStructuredGPS();
+        sendStructuredMotors();
+        sendStructuredSensors();
+        
+        lastFullStatusSent = millis(); // Обновляем время для статистики
+    }
+    
+    void sendStructuredGPS() {
+        if (!loraComm) return;
+        
+        PacketBase packetBase;
+        packetBase.packetId = nextPacketId++;
+        
+        uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
+        size_t payloadSize;
+        
+        if (StructuredDataManager::createGPSPacket(currentBoatSettings.gps, packetBase, payload, payloadSize)) {
+            loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
+            addLog("� GPS data sent: " + String(payloadSize) + " bytes");
+        }
+    }
+    
+    void sendStructuredMotors() {
+        if (!loraComm) return;
+        
+        PacketBase packetBase;
+        packetBase.packetId = nextPacketId++;
+        
+        uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
+        size_t payloadSize;
+        
+        if (StructuredDataManager::createMotorPacket(currentBoatSettings.motors, packetBase, payload, payloadSize)) {
+            loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
+            addLog("⚙️ Motor data sent: " + String(payloadSize) + " bytes");
+        }
+    }
+    
+    void sendStructuredSensors() {
+        if (!loraComm) return;
+        
+        PacketBase packetBase;
+        packetBase.packetId = nextPacketId++;
+        
+        uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
+        size_t payloadSize;
+        
+        if (StructuredDataManager::createSensorPacket(currentBoatSettings.sensors, packetBase, payload, payloadSize)) {
+            loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
+            addLog("🌡️ Sensor data sent: " + String(payloadSize) + " bytes");
+        }
+    }
+    
+    void sendStructuredLoRaStatus() {
+        if (!loraComm) return;
+        
+        PacketBase packetBase;
+        packetBase.packetId = nextPacketId++;
+        packetBase.packetType = CMD_STATUS; // Используем существующую команду
+        
+        // Простая сериализация LoRa статуса
+        uint8_t payload[LoRaStatus::serializedSize()];
+        currentBoatSettings.lora.serialize(payload);
+        
+        packetBase.payloadLen = LoRaStatus::serializedSize();
+        loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
+        addLog("📡 LoRa status sent: " + String(packetBase.payloadLen) + " bytes");
+    }
+    
+    void sendStructuredNavigation() {
+        if (!loraComm) return;
+        
+        PacketBase packetBase;
+        packetBase.packetId = nextPacketId++;
+        packetBase.packetType = CMD_NAV; // Используем существующую команду
+        
+        // Простая сериализация навигационных данных
+        uint8_t payload[NavigationStatus::serializedSize()];
+        currentBoatSettings.navigation.serialize(payload);
+        
+        packetBase.payloadLen = NavigationStatus::serializedSize();
+        loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
+        addLog("🧭 Navigation data sent: " + String(packetBase.payloadLen) + " bytes");
+    }
+    
+    void sendStructuredSystemInfo() {
+        if (!loraComm) return;
+        
+        PacketBase packetBase;
+        packetBase.packetId = nextPacketId++;
+        packetBase.packetType = CMD_STATUS; // Используем существующую команду
+        
+        // Создаем временную структуру с системной информацией
+        struct SystemInfo {
+            uint32_t uptime;
+            uint32_t freeHeap;
+            uint8_t systemHealth;
+            bool firmwareUpdateMode;
+        } sysInfo;
+        
+        sysInfo.uptime = currentBoatSettings.uptime;
+        sysInfo.freeHeap = currentBoatSettings.freeHeap;
+        sysInfo.systemHealth = currentBoatSettings.systemHealth;
+        sysInfo.firmwareUpdateMode = currentBoatSettings.firmwareUpdateMode;
+        
+        // Используем простую сериализацию для системной информации
+        uint8_t payload[sizeof(sysInfo)];
+        memcpy(payload, &sysInfo, sizeof(sysInfo));
+        
+        packetBase.payloadLen = sizeof(sysInfo);
+        loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
+        addLog("💻 System info sent: " + String(packetBase.payloadLen) + " bytes, Health:" + String(sysInfo.systemHealth) + "%");
+    }
+    
+    void processStructuredDataTransmission() {
+        if (!useStructuredData) {
+            return; // Используем старую JSON систему
+        }
+        
+        sendStructuredHeartbeat();
+        sendStructuredFullStatus();
+    }
+
     SensorCache sensorCache;
     PerformanceMetrics performanceMetrics;
     StackMonitor stackMonitor;
@@ -1960,6 +2326,21 @@ private:
         // Log the command like in oldHandlePacket
         addLog("Got COMMND: TYPE" + (char)cmd.packetType + String(":") + s);
         
+        // 🚀 Command deduplication check
+        unsigned long now = millis();
+        if (lastProcessedCommand.packetId == cmd.packetId && 
+            lastProcessedCommand.command == s &&
+            (now - lastProcessedCommand.timestamp) < COMMAND_DEDUP_TIMEOUT_MS) {
+            addLog("🔄 Skipping duplicate command: " + s + " (packet " + String(cmd.packetId) + 
+                   ", " + String(now - lastProcessedCommand.timestamp) + "ms ago)");
+            return;
+        }
+        
+        // Update deduplication tracking
+        lastProcessedCommand.packetId = cmd.packetId;
+        lastProcessedCommand.command = s;
+        lastProcessedCommand.timestamp = now;
+        
         // Process the command
         parser.processLine(s);
 
@@ -1973,6 +2354,15 @@ private:
         if (hdr.packetType == CMD_PING)
         {
             addLog("Got CMD_PING: smoothedRssi " + String(smoothedRssi) + "dBm");
+            
+            // 🚀 FIX: Send PONG response to PING
+            PacketCommand pong{};
+            pong.packetType = CMD_PONG;
+            pong.packetId = nextPacketId++;
+            pong.payloadLen = 0;
+            
+            loraComm->sendPacketBase(senderId, pong, nullptr, false);
+            addLog("📥 Received PING from " + String(senderId) + ", sent PONG response");
         }
         else if (hdr.packetType == CMD_PONG)
         {
@@ -2131,6 +2521,48 @@ private:
             }
             break;
         }
+        // 🚀 NEW: Structured data packet handling
+        case CMD_STRUCTURED_HEARTBEAT:
+        {
+            UltraCompactHeartbeat hb;
+            if (StructuredDataManager::parseHeartbeat(buf, hdr.payloadLen, hb)) {
+                addLog("📡 Ultra heartbeat: " + hb.toString());
+                // Обновляем информацию о MissionControl
+                if (senderId == MISSION_CONTROL_ID) {
+                    lastPacketReceived = millis();
+                    missionCOntrolIsActivae = true;
+                }
+                
+                // Статистика размеров пакетов - печатать раз в 30 секунд
+                static unsigned long lastStatsOutput = 0;
+                if (millis() - lastStatsOutput > 30000) {
+                    addLog("📊 " + StructuredDataManager::getStats());
+                    lastStatsOutput = millis();
+                }
+            } else {
+                addLog("❌ Failed to parse ultra heartbeat");
+            }
+            break;
+        }
+        case CMD_STRUCTURED_GPS:
+        {
+            GPSStatus gps;
+            if (StructuredDataManager::parseGPS(buf, hdr.payloadLen, gps)) {
+                addLog("📍 Received GPS data: " + gps.toString());
+            } else {
+                addLog("❌ Failed to parse GPS data");
+            }
+            break;
+        }
+        case CMD_STRUCTURED_MOTORS:
+        case CMD_STRUCTURED_SENSORS:
+        case CMD_STRUCTURED_NAVIGATION:
+        case CMD_STRUCTURED_FRAGMENT:
+        {
+            addLog("📦 Received structured packet type: " + String((char)hdr.packetType) + ", size: " + String(hdr.payloadLen));
+            // TODO: Implement parsing for other structured packet types
+            break;
+        }
         default:
             addLog("Got Unknown LoRa cmd: " + String((char)hdr.packetType));
             break;
@@ -2166,8 +2598,45 @@ private:
         if (hdr.payloadLen == sizeof(uint8_t))
         {
             uint8_t profileIndex = buf[0];
-            addLog("✅ ASA response received. Applying higher LoRa profile old/new index: " +
-                   String(loraComm->getCurrentProfileIndex()) + "/" + String(profileIndex));
+            uint8_t currentProfile = loraComm->getCurrentProfileIndex();
+            
+            // 🚨 КРИТИЧЕСКИЙ БАГ ФИХ: Проверяем валидность предложенного профиля
+            if (profileIndex >= LORA_PROFILE_COUNT) {
+                addLog("❌ ASA: Invalid profile index " + String(profileIndex) + ", ignoring");
+                return;
+            }
+            
+            // Анализируем тип перехода
+            String transitionType;
+            if (profileIndex > currentProfile) {
+                transitionType = "upgrade";
+            } else if (profileIndex < currentProfile) {
+                transitionType = "downgrade";
+            } else {
+                transitionType = "same profile";
+            }
+            
+            addLog("✅ ASA response: " + transitionType + " " + 
+                   String(currentProfile) + "→" + String(profileIndex));
+            
+            // Проверяем, нужен ли такой переход на основе текущих условий
+            float currentRssi = PongRssi; // Используем последний известный RSSI
+            int optimalProfile = selectOptimalProfile(currentRssi, 15.0f, false); // Тихая проверка
+            
+            // 🔒 ЗАЩИТА: Отклоняем переход на профиль 0 с хорошего профиля, если сигнал хороший
+            if (profileIndex == 0 && currentProfile >= 8 && currentRssi > -60.0f) {
+                addLog("🛡️ ASA: Rejecting downgrade to profile 0 with good signal " + 
+                       String(currentRssi) + "dBm, staying on " + String(currentProfile));
+                return;
+            }
+            
+            // 🎯 ВАЛИДАЦИЯ: Проверяем, соответствует ли предложенный профиль оптимальному
+            if (abs(profileIndex - optimalProfile) > 2) {
+                addLog("⚠️ ASA: Proposed profile " + String(profileIndex) + 
+                       " differs from optimal " + String(optimalProfile) + 
+                       " (RSSI=" + String(currentRssi) + "), but applying anyway");
+            }
+            
             applyProfile(profileIndex);
         }
         else
