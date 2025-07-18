@@ -34,7 +34,9 @@ public:
     void begin()
     {
         randomSeed(micros());
+        
         WiFiManager::begin("Radiation", "polkalol", 3 * 3600, 30 * 60 * 1000);
+        vTaskDelay(pdMS_TO_TICKS(1000));
         Serial.println(F("[MC] Starting Mission Control..."));
         if (!loraComm->begin())
         {
@@ -68,10 +70,6 @@ public:
             hdr.payloadLen = pkt.payloadLen;
             if (pkt.receiverId == MISSION_CONTROL_ID)
             {
-                // addLog("[" + String(currentProfileIndex) + "]  Received LoRaPacket: sender=" + String(pkt.senderId) +
-                //        ", type=" + String((char)pkt.packetType) +
-                //        ", id=" + String(pkt.packetId) +
-                //        ", len=" + String(pkt.payloadLen));
                 handlePacket(pkt.senderId, hdr, pkt.payload);
             }
         }
@@ -90,7 +88,7 @@ public:
             resp.payloadLen = sizeof(uint8_t);
             resp.profileIndex = currentProfileIndex;
             loraComm->sendPacketBase(BOAT_DEVICE_ID, resp, (const uint8_t*)&resp.profileIndex, false);
-            vTaskDelay(pdMS_TO_TICKS(500));
+            vTaskDelay(pdMS_TO_TICKS(1000));
             applyProfile(currentProfileIndex);
 
             lastPingTime = millis(); // Сбросим таймер
@@ -138,25 +136,22 @@ public:
         pong.payloadLen = 0;
 
         loraComm->sendPacketBase(BOAT_DEVICE_ID, pong, nullptr, false);
-        addLog(F("[MC] 🔄 Heartbeat PONG sent"));
+        addLog(F("[CMD] Heartbeat PONG sent"));
 
-        // cформируем новый случайный интервал 10–20 с
-        nextPongInterval = random(10000UL, 20001UL);
+        // cформируем новый случайный интервал 10–15 с
+        nextPongInterval = random(10000UL, 15001UL);
         lastPongHeartbeat = millis();
     }
 
     void addLog(const String &msg) override
     {
-        Serial.print('[');
-        Serial.print(timeStr());
-        Serial.print("] ");
-        Serial.println(msg);
+        Serial.println("[" + timeStr() + "] " + msg);
     }
 
     void applyProfile(uint8_t idx)
     {
         if (idx >= LORA_PROFILE_COUNT) {
-            addLog("❌ Недопустимый индекс профиля: " + String(idx));
+            addLog("ERROR: Bad profile index: " + String(idx));
             return;
         }
         
@@ -169,18 +164,18 @@ public:
             String modeStr = (profile.mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
             
             if (profile.mode == RadioProfileMode::LORA) {
-                addLog("⚙️ MC: Применён " + modeStr + " профиль " + String(idx) + 
+                addLog("DEBUG: applied " + modeStr + " profile " + String(idx) + 
                        " (SF=" + String(profile.spreadingFactor) + 
                        ", CR=" + String(profile.codingRate) + 
                        ", BW=" + String(profile.bandwidth, 1) + "kHz)");
             } else {
-                addLog("⚙️ MC: Применён " + modeStr + " профиль " + String(idx) + 
+                addLog("DEBUG: applied " + modeStr + " profile " + String(idx) + 
                        " (Bitrate=" + String(profile.bitrate) + 
                        ", Dev=" + String(profile.deviation) + 
                        ", RxBW=" + String(profile.bandwidth, 1) + "kHz)");
-            }
+            }            
         } else {
-            addLog("❌ MC: Ошибка применения профиля " + String(idx));
+            addLog("ERROR: Cannot apply profile " + String(idx));
         }
     }
 
@@ -233,7 +228,7 @@ public:
             cmdStr += ":" + param;
         }
         sendCommandString(cmdStr);
-        addLog("[MC] 🔧 Sent diagnostic command: " + cmdStr);
+        addLog("[sendDiagnosticCommand]" + cmdStr);
     }
 
     // Send LoRa command (L) to boat
@@ -244,7 +239,28 @@ public:
             cmdStr += ":" + param;
         }
         sendCommandString(cmdStr);
-        addLog("[MC] 📡 Sent LoRa command: " + cmdStr);
+        // Check if this is a profile change command and synchronize
+        if (param.length() > 0 && param[0] >= '0' && param[0] <= '9') {
+            // Direct profile number input (e.g., "1", "12", etc.)
+            int profileIndex = param.toInt();
+            if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
+                addLog("[sendLoRaCommand]Synchronizing MissionControl to profile " + String(profileIndex) + " after sending command");
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                applyProfile(profileIndex);
+                addLog("[sendLoRaCommand]Profile " + String(profileIndex) + " applied");
+            }
+        } else if (param.startsWith("P") || param.startsWith("profile:")) {
+            // Profile command with P prefix or profile: prefix
+            String profileStr = param.startsWith("profile:") ? param.substring(8) : param.substring(1);
+            int profileIndex = profileStr.toInt();
+            if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
+                addLog("[sendLoRaCommand]Synchronizing MissionControl to profile " + String(profileIndex) + " after sending command");
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                applyProfile(profileIndex);
+                addLog("[sendLoRaCommand]Profile " + String(profileIndex) + " applied");
+            }
+        }
+        addLog("[LORA:CMD->BOAT]" + cmdStr);
     }
 
     // Send navigation command (N) to boat
@@ -255,7 +271,7 @@ public:
             cmdStr += ":" + param;
         }
         sendCommandString(cmdStr);
-        addLog("[MC] 🧭 Sent navigation command: " + cmdStr);
+        addLog("[sendNavigationCommand]" + cmdStr);
     }
 
     // Send web interface command (W) to boat
@@ -266,7 +282,7 @@ public:
             cmdStr += ":" + param;
         }
         sendCommandString(cmdStr);
-        addLog("[MC] 🌐 Sent web command: " + cmdStr);
+        addLog("[sendWebCommand]" + cmdStr);
     }
 
     // Convenience methods for specific navigation operations
@@ -349,7 +365,7 @@ public:
     {
         String cmdStr = "M:" + String(power);
         sendCommandString(cmdStr);
-        addLog("[MC] ⚙️ Sent engine command: " + cmdStr);
+        addLog("[sendEngineCommand]" + cmdStr);
     }
 
     void emergencyStop()

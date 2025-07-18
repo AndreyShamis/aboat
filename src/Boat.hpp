@@ -358,6 +358,16 @@ public:
                                         // Trigger adaptive LoRa
                                         adaptiveLoraUpdate();
                                         response += "Adaptive LoRa triggered";
+                                    } else if (arg.length() > 0 && arg[0] >= '0' && arg[0] <= '9') {
+                                        // Direct profile number input (e.g., "1", "12", etc.)
+                                        int profileIndex = arg.toInt();
+                                        if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
+                                            applyProfile(profileIndex);
+                                            addLog("[LORA] Manually switched to profile " + String(profileIndex));
+                                            response += "Profile changed to " + String(profileIndex);
+                                        } else {
+                                            response += "Invalid profile index:" + String(profileIndex);
+                                        }
                                     } else {
                                         response += "Current profile:" + String(loraComm->getCurrentProfileIndex()) + ",RSSI:" + String(smoothedRssi) + "dBm";
                                     }
@@ -504,7 +514,7 @@ public:
                                     // Send response back to MissionControl
                                     sendResponseToMissionControl(response); });
 
-        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa), N (navigation), W (waypoints), T (time)");
+        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers), N (navigation), W (waypoints), T (time)");
 
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
@@ -630,6 +640,23 @@ public:
             
             waitingForASAAck = false;
         }
+        // 🚨 ОБЩАЯ проверка heartbeat от MissionControl (независимо от ASA)
+        if (missionCOntrolIsActivae && millis() - lastPacketReceived > ACTIVITY_TIMEOUT)
+        {
+            unsigned long timeoutSeconds = (millis() - lastPacketReceived) / 1000;
+            addLog("💔 MissionControl heartbeat timeout (" + String(timeoutSeconds) + "s > " + String(ACTIVITY_TIMEOUT/1000) + "s) - deactivating");
+            missionCOntrolIsActivae = false;
+            PongRssi = 0;
+            // Сбрасываем кэш для немедленного применения профиля 0
+            sensorCache.valid = false;
+            // Если активен ASA режим - тоже выключаем
+            if (asaActive) {
+                addLog("⏳ ASA: Деактивация из-за потери MissionControl. Возврат к дефолтным LoRa-настройкам.");
+                restoreDefaultLoRaSettings();
+                asaActive = false;
+            }
+        }
+
         if (asaActive && millis() - lastPacketReceived > ACTIVITY_TIMEOUT)
         {
             addLog("⏳ ASA: Таймаут активности. Возврат к дефолтным LoRa-настройкам.");
@@ -637,6 +664,8 @@ public:
             asaActive = false;
             PongRssi = 0;
             missionCOntrolIsActivae = false;
+            // Сбрасываем кэш для немедленного применения профиля 0
+            sensorCache.valid = false;
         }
 
         // 🚨 ПРИНУДИТЕЛЬНЫЙ переход на профиль 0 при потере связи с пультом
@@ -644,8 +673,13 @@ public:
         {
             addLog("🚨 Mission Control неактивен - принудительный переход на профиль 0");
             applyProfile(0);
+            // Сбрасываем кэш, чтобы избежать повторного переключения
+            sensorCache.valid = false;
+            // Сбрасываем время последнего адаптивного переключения
+            lastAdaptiveSwitchTime = 0;
         }
 
+        // Адаптивная LoRa работает ТОЛЬКО когда MissionControl активен
         if (missionCOntrolIsActivae)
         {
             adaptiveLoraUpdate();
@@ -873,21 +907,25 @@ public:
 
         // Use cached values if available, otherwise get fresh data
         float rssi, snr;
+        bool verboseDebug = false; // Flag to control verbose output
+        
         if (sensorCache.isValid())
         {
             rssi = sensorCache.lastRSSI;
             snr = sensorCache.lastSNR;
-            addLog("🔄 Using cached values: RSSI=" + String(rssi, 2) + ", SNR=" + String(snr, 2));
         }
         else
         {
             rssi = loraComm->getRadio().getRSSI();
             snr = loraComm->getRadio().getSNR();
+            verboseDebug = true; // Show debug for fresh data
 
-            // Debug: показываем режим и исходные значения
-            RadioMode currentMode = loraComm->mode();
-            String modeStr = (currentMode == RadioMode::FSK) ? "GFSK" : "LoRa";
-            addLog("📊 Fresh data: Mode=" + modeStr + ", RSSI=" + String(rssi, 2) + ", Raw SNR=" + String(snr, 2));
+            // Debug: показываем режим и исходные значения только для fresh data
+            if (verboseDebug) {
+                RadioMode currentMode = loraComm->mode();
+                String modeStr = (currentMode == RadioMode::FSK) ? "GFSK" : "LoRa";
+                addLog("📊 Fresh data: Mode=" + modeStr + ", RSSI=" + String(rssi, 2) + ", Raw SNR=" + String(snr, 2));
+            }
 
             // Validate RSSI values - reject obviously incorrect readings
             if (rssi < -130.0f || rssi > 0.0f) {
@@ -921,7 +959,11 @@ public:
             {
                 snr = 5.0f; // Слабый сигнал - стоит вернуться к LoRa
             }
-            addLog("🔧 GFSK SNR Fix: " + String(originalSnr, 1) + "dB → " + String(snr, 1) + "dB (RSSI-based estimate)");
+            
+            // Show GFSK fix only for fresh data or when there's a significant difference
+            if (verboseDebug || abs(originalSnr - snr) > 2.0f) {
+                addLog("🔧 GFSK SNR Fix: " + String(originalSnr, 1) + "dB → " + String(snr, 1) + "dB (RSSI-based estimate)");
+            }
         }
 
         int bestIndex = loraComm->getCurrentProfileIndex();
@@ -929,7 +971,7 @@ public:
         PongRssi = rssi;
 
         // Enhanced profile selection with SNR consideration
-        bestIndex = selectOptimalProfile(PongRssi, snr);
+        bestIndex = selectOptimalProfile(PongRssi, snr, verboseDebug);
 
         uint8_t currentProfile = loraComm->getCurrentProfileIndex();
         if (bestIndex != currentProfile)
@@ -956,36 +998,48 @@ public:
             }
             asaProposalTime = millis();
         }
+        // No profile change needed - stay quiet unless it's fresh data
+        else if (verboseDebug) {
+            addLog("🔄 Profile " + String(currentProfile) + " optimal, no change needed (RSSI=" + String(rssi, 1) + ", SNR=" + String(snr, 1) + ")");
+        }
     }
 
     // Enhanced profile selection with SNR consideration
-    int selectOptimalProfile(float rssi, float snr)
+    int selectOptimalProfile(float rssi, float snr, bool verbose = false)
     {
-        addLog("🔍 Profile Selection: RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) + "dB");
+        if (verbose) {
+            addLog("🔍 Profile Selection: RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) + "dB");
+        }
 
         // Используем новую таблицу с поддержкой FSK и SNR
         for (size_t i = 0; i < rssiProfileCount; ++i)
         {
-            addLog("  🔸 Check [" + String(i) + "]: minRSSI=" + String(rssiToProfileTable[i].minRssi, 1) +
-                   ", minSNR=" + String(rssiToProfileTable[i].minSnr, 1) +
-                   " → profile " + String(rssiToProfileTable[i].profileIndex));
+            if (verbose) {
+                addLog("  🔸 Check [" + String(i) + "]: minRSSI=" + String(rssiToProfileTable[i].minRssi, 1) +
+                       ", minSNR=" + String(rssiToProfileTable[i].minSnr, 1) +
+                       " → profile " + String(rssiToProfileTable[i].profileIndex));
+            }
 
             if (rssi >= rssiToProfileTable[i].minRssi &&
                 snr >= rssiToProfileTable[i].minSnr)
             {
 
                 int suggestedProfile = rssiToProfileTable[i].profileIndex;
-                String modeStr = (loraProfiles[suggestedProfile].mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
-
-                addLog("✅ MATCH! RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) +
-                       "dB → профиль " + String(suggestedProfile) + " (" + modeStr + ")");
+                
+                if (verbose) {
+                    String modeStr = (loraProfiles[suggestedProfile].mode == RadioProfileMode::FSK) ? "GFSK" : "LoRa";
+                    addLog("✅ MATCH! RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) +
+                           "dB → профиль " + String(suggestedProfile) + " (" + modeStr + ")");
+                }
 
                 return suggestedProfile;
             }
         }
 
         // Fallback: возвращаем самый надёжный профиль
-        addLog("❌ No matches found, fallback to profile 0");
+        if (verbose) {
+            addLog("❌ No matches found, fallback to profile 0");
+        }
         return 0;
     }
 
@@ -1664,7 +1718,10 @@ private:
             LoRaPacket pkt = {}; // Explicitly initialize to zero
             if (loraComm->receive(pkt) && pkt.senderId != BOAT_DEVICE_ID)
             {
-                lastPacketReceived = millis();
+                // 💗 ЛЮБОЙ пакет от MissionControl сбрасывает таймер heartbeat
+                if (pkt.senderId == MISSION_CONTROL_ID) {
+                    lastPacketReceived = millis();
+                }
                 // Process packet with optimized stack usage
                 handleLoRaPacketOptimized(pkt);
             }
@@ -1706,7 +1763,7 @@ private:
         // Handle MissionControl specific processing (like in oldHandlePacket)
         if (pkt.senderId == MISSION_CONTROL_ID)
         {
-            lastPacketReceived = millis(); 
+            // lastPacketReceived уже обновлен выше для ЛЮБОГО пакета от MissionControl
             PongRssi = updateSmoothedRssi(rssi);
             if(!missionCOntrolIsActivae){
                 smoothedRssi = rssi;
@@ -2052,8 +2109,7 @@ private:
         {
             // Используем bulk ACK вместо мгновенной отправки
             addToBulkAck(hdr.packetId);
-            // Update lastPacketReceived like in oldHandlePacket
-            lastPacketReceived = millis();
+            // lastPacketReceived уже обновлен выше для пакетов от MissionControl
         }
     }
 
