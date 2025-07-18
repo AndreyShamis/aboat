@@ -563,7 +563,7 @@ private:
     PacketId_t nextPacketId = 0;
     unsigned long lastPingTime = 0;
     int currentProfileIndex = 0;
-    unsigned long checkInterval = 35 * 1000;
+    unsigned long checkInterval = 45 * 1000;
 
     // Система агрегированных ACK
     PacketBulkAck pendingBulkAck;

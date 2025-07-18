@@ -41,7 +41,7 @@ static constexpr unsigned long RSSI_REPORT_INTERVAL = 27123;
 static constexpr unsigned long PING_INTERVAL = 40013;
 static constexpr unsigned long ASA_TIMEOUT = 15007;
 static constexpr unsigned long ACTIVITY_TIMEOUT = 35777;
-static constexpr unsigned long ADAPTIVE_SWITCH_INTERVAL = 25011;
+static constexpr unsigned long ADAPTIVE_SWITCH_INTERVAL = 8000; // 🚀 Reduced from 25s to 8s for faster adaptation
 
 // ============================================================================
 // MAIN BOAT CLASS WITH OPTIMIZATIONS
@@ -936,8 +936,13 @@ public:
             nextPacketId++;
             waitingForASAAck = true;
 
+            // 🚀 AGGRESSIVE UPGRADES: Apply upgrades immediately for faster adaptation
+            if (direction == "upgrade" && rssi > -80.0f) {
+                applyProfile(bestIndex);
+                addLog("⬆️ ASA: Immediate upgrade to profile " + String(bestIndex) + " (good signal)");
+            }
             // For downgrades, apply immediately for safety
-            if (direction == "downgrade")
+            else if (direction == "downgrade")
             {
                 applyProfile(bestIndex);
                 addLog("⬇️ ASA: Emergency downgrade to profile " + String(bestIndex));
@@ -1699,6 +1704,12 @@ private:
             if(!missionCOntrolIsActivae){
                 smoothedRssi = rssi;
                 PongRssi = rssi;
+                
+                // 🚀 AUTO-ADAPTATION: Mission Control reconnected - trigger adaptive update after this packet
+                addLog("🔄 Mission Control reconnected - scheduling adaptive LoRa update");
+                // Set a flag to trigger adaptation in next loop cycle
+                lastAdaptiveSwitchTime = millis() - ADAPTIVE_SWITCH_INTERVAL; // Force immediate adaptation
+                sensorCache.valid = false; // Force fresh readings
             }
             missionCOntrolIsActivae = true;
         }
@@ -1869,6 +1880,16 @@ private:
         {
             // PONG - важная команда, оставляем лог для диагностики связи (matching oldHandlePacket)
             addLog("Got CMD_PONG");
+            
+            // 🚀 AUTO-ADAPTATION: При получении PONG от MissionControl запускаем адаптацию
+            if (senderId == MISSION_CONTROL_ID && !waitingForASAAck) {
+                // Invalidate cache to force fresh RSSI/SNR readings
+                sensorCache.valid = false;
+                
+                // Trigger immediate adaptive update for faster profile optimization
+                adaptiveLoraUpdate();
+                addLog("🔄 Auto-triggered adaptive update after PONG from MC");
+            }
         }
     }
 
