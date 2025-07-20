@@ -239,6 +239,36 @@ public:
         return true;
     }
     
+    // 🚀 NEW: Разбор данных моторов
+    static bool parseMotors(const uint8_t* payload, size_t payloadSize, MotorStatus& motors) {
+        if (payloadSize != MotorStatus::serializedSize()) {
+            return false;
+        }
+        
+        motors.deserialize(payload);
+        return true;
+    }
+    
+    // 🚀 NEW: Разбор данных датчиков
+    static bool parseSensors(const uint8_t* payload, size_t payloadSize, SensorStatus& sensors) {
+        if (payloadSize != SensorStatus::serializedSize()) {
+            return false;
+        }
+        
+        sensors.deserialize(payload);
+        return true;
+    }
+    
+    // 🚀 NEW: Разбор навигационных данных
+    static bool parseNavigation(const uint8_t* payload, size_t payloadSize, NavigationStatus& navigation) {
+        if (payloadSize != NavigationStatus::serializedSize()) {
+            return false;
+        }
+        
+        navigation.deserialize(payload);
+        return true;
+    }
+    
     // Разбор фрагментированного пакета
     static bool parseFragment(const uint8_t* payload, size_t payloadSize, 
                               StructuredFragmentHeader& header, const uint8_t*& fragmentData, size_t& fragmentSize) {

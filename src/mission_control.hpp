@@ -1194,40 +1194,51 @@ private:
         case CMD_STRUCTURED_MOTORS:
         {
             addLog("[MC][CMD_STRUCTURED_MOTORS] Motor data received (" + String(hdr.payloadLen) + " bytes)");
-            // TODO: Implement StructuredDataManager::parseMotors()
-            // MotorStatus motors;
-            // if (StructuredDataManager::parseMotors(buf, hdr.payloadLen, motors)) {
-            //     lastBoatStatus.motors = motors;
-            //     lastBoatStatus.updateTimestamp();
-            //     lastBoatStatusUpdate = millis();
-            //     hasValidBoatStatus = true;
-            // }
+            MotorStatus motors;
+            if (StructuredDataManager::parseMotors(buf, hdr.payloadLen, motors)) {
+                addLog("[MC] ⚙️ Motors: State=" + String(motors.state) + ", L=" + String(motors.leftPower) + 
+                       ", R=" + String(motors.rightPower) + ", Rudder=" + String(motors.rudderAngle) + "°");
+                lastBoatStatus.motors = motors;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+                hasValidBoatStatus = true;
+            } else {
+                addLog("[MC] ❌ Failed to parse motor data");
+            }
             break;
         }
         case CMD_STRUCTURED_SENSORS:
         {
             addLog("[MC][CMD_STRUCTURED_SENSORS] Sensor data received (" + String(hdr.payloadLen) + " bytes)");
-            // TODO: Implement StructuredDataManager::parseSensors()
-            // SensorStatus sensors;
-            // if (StructuredDataManager::parseSensors(buf, hdr.payloadLen, sensors)) {
-            //     lastBoatStatus.sensors = sensors;
-            //     lastBoatStatus.updateTimestamp();
-            //     lastBoatStatusUpdate = millis();
-            //     hasValidBoatStatus = true;
-            // }
+            SensorStatus sensors;
+            if (StructuredDataManager::parseSensors(buf, hdr.payloadLen, sensors)) {
+                addLog("[MC] 🌡️ Sensors: Bat=" + String(sensors.batteryVoltage, 1) + "V/" + String(sensors.batteryPercent) + 
+                       "%, Temp=" + String(sensors.motor1Temp, 1) + "°C/" + String(sensors.motor2Temp, 1) + "°C");
+                lastBoatStatus.sensors = sensors;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+                hasValidBoatStatus = true;
+            } else {
+                addLog("[MC] ❌ Failed to parse sensor data");
+            }
             break;
         }
         case CMD_STRUCTURED_NAVIGATION:
         {
             addLog("[MC][CMD_STRUCTURED_NAVIGATION] Navigation data received (" + String(hdr.payloadLen) + " bytes)");
-            // TODO: Implement StructuredDataManager::parseNavigation()
-            // NavigationStatus navigation;
-            // if (StructuredDataManager::parseNavigation(buf, hdr.payloadLen, navigation)) {
-            //     lastBoatStatus.navigation = navigation;
-            //     lastBoatStatus.updateTimestamp();
-            //     lastBoatStatusUpdate = millis();
-            //     hasValidBoatStatus = true;
-            // }
+            NavigationStatus navigation;
+            if (StructuredDataManager::parseNavigation(buf, hdr.payloadLen, navigation)) {
+                String modeStr[] = {"MANUAL", "WAYPOINT", "RTH", "STATION"};
+                addLog("[MC] 🧭 Navigation: Mode=" + modeStr[navigation.mode] + 
+                       ", Active=" + String(navigation.navigationActive ? "YES" : "NO") + 
+                       ", Distance=" + String(navigation.distanceToTarget, 1) + "m");
+                lastBoatStatus.navigation = navigation;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+                hasValidBoatStatus = true;
+            } else {
+                addLog("[MC] ❌ Failed to parse navigation data");
+            }
             break;
         }
         case CMD_STRUCTURED_FRAGMENT:
