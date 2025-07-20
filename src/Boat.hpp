@@ -1103,10 +1103,10 @@ public:
                 snr = 5.0f; // Слабый сигнал - стоит вернуться к LoRa
             }
             
-            // Show GFSK fix only for fresh data or when there's a significant difference
-            if (verboseDebug || abs(originalSnr - snr) > 2.0f) {
-                addLog("🔧 GFSK SNR Fix: " + String(originalSnr, 1) + "dB → " + String(snr, 1) + "dB (RSSI-based estimate)");
-            }
+            // // Show GFSK fix only for fresh data or when there's a significant difference
+            // if (verboseDebug || abs(originalSnr - snr) > 2.0f) {
+            //     addLog("🔧 GFSK SNR Fix: " + String(originalSnr, 1) + "dB → " + String(snr, 1) + "dB (RSSI-based estimate)");
+            // }
         }
 
         int bestIndex = loraComm->getCurrentProfileIndex();
