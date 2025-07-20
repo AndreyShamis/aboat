@@ -8,6 +8,7 @@
 #include "wifi_manager.hpp"
 #include "PacketAsaExchange.hpp"
 #include "DataPacket.hpp"  // 🚀 NEW: Support for structured data
+#include "BoatSettings.hpp" // 🚀 NEW: Boat status structure
 
 // -----------------------------------------------------------------------------
 // MissionControl
@@ -474,19 +475,19 @@ public:
         Serial.println("║   W:C               - Clear waypoints                          ║");
         Serial.println("║   W:status          - Web interface status                     ║");
         Serial.println("║                                                                  ║");
-        Serial.println("║ 📦 Structured Data Commands (BS:) - NEW BoatSettings API       ║");
-        Serial.println("║   BS:H      - Request structured heartbeat (basic status)      ║");
-        Serial.println("║   BS:F      - Request full structured status                   ║");
-        Serial.println("║   BS:G      - Request GPS data only                            ║");
-        Serial.println("║   BS:M      - Request motor status only                        ║");
-        Serial.println("║   BS:S      - Request sensor data only (temp, battery)         ║");
-        Serial.println("║   BS:L      - Request LoRa status only                         ║");
-        Serial.println("║   BS:N      - Request navigation status only                   ║");
-        Serial.println("║   BS:SYS    - Request system info (uptime, memory, health)     ║");
-        Serial.println("║   BS:ON     - Enable structured data mode                      ║");
-        Serial.println("║   BS:OFF    - Disable structured data mode (use JSON)          ║");
-        Serial.println("║   BS:PING   - Send manual ping to boat                         ║");
-        Serial.println("║   BS:RSSI   - Request RSSI report from boat                    ║");
+        Serial.println("║ 📦 Structured Data Commands (BS:/DM:) - NEW BoatSettings API  ║");
+        Serial.println("║   BS:H / DM:H  - Request structured heartbeat (basic status)   ║");
+        Serial.println("║   BS:F / DM:F  - Request full structured status                ║");
+        Serial.println("║   BS:G / DM:G  - Request GPS data only                         ║");
+        Serial.println("║   BS:M / DM:M  - Request motor status only                     ║");
+        Serial.println("║   BS:S / DM:S  - Request sensor data only (temp, battery)      ║");
+        Serial.println("║   BS:L / DM:L  - Request LoRa status only                      ║");
+        Serial.println("║   BS:N / DM:N  - Request navigation status only                ║");
+        Serial.println("║   BS:SYS/DM:SYS- Request system info (uptime, memory, health)  ║");
+        Serial.println("║   BS:ON/DM:ON  - Enable structured data mode                   ║");
+        Serial.println("║   BS:OFF/DM:OFF- Disable structured data mode (use JSON)       ║");
+        Serial.println("║   BS:PING      - Send manual ping to boat                      ║");
+        Serial.println("║   BS:RSSI      - Request RSSI report from boat                 ║");
         Serial.println("║                                                                  ║");
         Serial.println("║ ⚙️ Legacy Commands:                                            ║");
         Serial.println("║   M:120     - Set motor power                                   ║");
@@ -497,6 +498,8 @@ public:
         Serial.println("║   SCAN      - Spectrum scan (CSV output)                       ║");
         Serial.println("║   profiles  - Show all available radio profiles                ║");
         Serial.println("║   status    - Show connection status and boat diagnostics      ║");
+        Serial.println("║   boatstatus- Show detailed boat status (from structured data) ║");
+        Serial.println("║   requestboat- Request full boat status from boat              ║");
         Serial.println("║   ping      - Send manual ping to check boat connection        ║");
         Serial.println("║   demo      - Run demo commands sequence                       ║");
         Serial.println("║   help      - Show this help                                   ║");
@@ -596,9 +599,15 @@ public:
         else if (cmd == "P") {
             sendPingCommand();
         }
-        else if (cmd.startsWith("BS:")) {
-            // 📦 NEW: Structured Data Commands for BoatSettings
-            String param = cmd.substring(3);
+        else if (cmd.startsWith("BS:") || cmd.startsWith("DM:")) {
+            // 📦 NEW: Structured Data Commands for BoatSettings (BS:) and DataMode (DM:)
+            // Both prefixes are supported for compatibility
+            String param;
+            if (cmd.startsWith("BS:")) {
+                param = cmd.substring(3);
+            } else {
+                param = cmd.substring(3);
+            }
             
             if (param == "H") {
                 // Request structured heartbeat
@@ -661,7 +670,7 @@ public:
                 addLog("[MC] 📶 Requested RSSI report");
             }
             else {
-                addLog("[MC] ❌ Unknown BS command: " + param + ". Available: H,F,G,M,S,L,N,SYS,ON,OFF,PING,RSSI");
+                addLog("[MC] ❌ Unknown structured data command: " + param + ". Available: H,F,G,M,S,L,N,SYS,ON,OFF,PING,RSSI");
             }
         }
         else if (cmd == "help" || cmd == "HELP" || cmd == "h" || cmd == "H") {
@@ -672,6 +681,14 @@ public:
         }
         else if (cmd == "status" || cmd == "STATUS") {
             printConnectionStatus();
+        }
+        else if (cmd == "boatstatus" || cmd == "BOATSTATUS" || cmd == "bs") {
+            printBoatStatus();
+        }
+        else if (cmd == "requestboat" || cmd == "REQUESTBOAT") {
+            // Request full boat status
+            sendCommandString("DM:F");
+            addLog("[MC] 📦 Requested full boat status - wait a moment then use 'boatstatus'");
         }
         else if (cmd == "ping" || cmd == "PING") {
             // Manual ping to boat
@@ -738,6 +755,72 @@ public:
         Serial.println("╚══════════════════════════════════════════════════════════════════╝");
     }
 
+    // 🚀 NEW: Full boat status display
+    void printBoatStatus()
+    {
+        if (!hasValidBoatStatus) {
+            Serial.println("\n╔══════════════════════════════════════════════════════════════════╗");
+            Serial.println("║                         BOAT STATUS                              ║");
+            Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+            Serial.println("║ No valid boat status data available                             ║");
+            Serial.println("║ Try sending 'DM:F' or 'BS:F' to request full status             ║");
+            Serial.println("╚══════════════════════════════════════════════════════════════════╝");
+            return;
+        }
+
+        unsigned long timeSinceUpdate = millis() - lastBoatStatusUpdate;
+        bool dataFresh = timeSinceUpdate < 30000; // 30 секунд
+
+        Serial.println("\n╔══════════════════════════════════════════════════════════════════╗");
+        Serial.println("║                         BOAT STATUS                              ║");
+        Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+        Serial.println("║ Data Age: " + String(timeSinceUpdate/1000) + "s " + String(dataFresh ? "(FRESH)" : "(OLD)") + String("                                    ").substring(0, 47 - String(timeSinceUpdate/1000).length()) + "║");
+        Serial.println("║ Timestamp: " + String(lastBoatStatus.timestamp) + String("                                     ").substring(0, 45 - String(lastBoatStatus.timestamp).length()) + "║");
+        Serial.println("║ Version: " + String(lastBoatStatus.version) + String("                                           ").substring(0, 51 - String(lastBoatStatus.version).length()) + "║");
+        Serial.println("╠══════════════════════════════════════════════════════════════════╣");
+        
+        // GPS Status
+        Serial.println("║ GPS:                                                             ║");
+        Serial.println("║   Position: " + String(lastBoatStatus.gps.position.latitude, 6) + "," + String(lastBoatStatus.gps.position.longitude, 6) + String("                       ").substring(0, 37 - String(lastBoatStatus.gps.position.latitude, 6).length() - String(lastBoatStatus.gps.position.longitude, 6).length()) + "║");
+        Serial.println("║   Satellites: " + String(lastBoatStatus.gps.satelliteCount) + ", Fix: " + String(lastBoatStatus.gps.hasFix ? "YES" : "NO") + String("                                ").substring(0, 41 - String(lastBoatStatus.gps.satelliteCount).length()) + "║");
+        
+        // Motor Status  
+        Serial.println("║ Motors:                                                          ║");
+        String motorStateStr[] = {"STOP", "FWD", "REV"};
+        Serial.println("║   State: " + motorStateStr[lastBoatStatus.motors.state] + ", L:" + String(lastBoatStatus.motors.leftPower) + ", R:" + String(lastBoatStatus.motors.rightPower) + String("                            ").substring(0, 38 - motorStateStr[lastBoatStatus.motors.state].length() - String(lastBoatStatus.motors.leftPower).length() - String(lastBoatStatus.motors.rightPower).length()) + "║");
+        Serial.println("║   Rudder: " + String(lastBoatStatus.motors.rudderAngle) + "°, Limit: " + String(lastBoatStatus.motors.throttleLimit) + "%" + String("                              ").substring(0, 36 - String(lastBoatStatus.motors.rudderAngle).length() - String(lastBoatStatus.motors.throttleLimit).length()) + "║");
+        Serial.println("║   Emergency Stop: " + String(lastBoatStatus.motors.emergencyStop ? "YES" : "NO") + String("                                    ").substring(0, 47 - String(lastBoatStatus.motors.emergencyStop ? "YES" : "NO").length()) + "║");
+        
+        // LoRa Status
+        Serial.println("║ LoRa:                                                            ║");
+        Serial.println("║   Profile: " + String(lastBoatStatus.lora.currentProfile) + ", RSSI: " + String(lastBoatStatus.lora.rssi, 1) + "dBm" + String("                            ").substring(0, 33 - String(lastBoatStatus.lora.currentProfile).length() - String(lastBoatStatus.lora.rssi, 1).length()) + "║");
+        Serial.println("║   SNR: " + String(lastBoatStatus.lora.snr, 1) + "dB, Adaptive: " + String(lastBoatStatus.lora.adaptiveMode ? "ON" : "OFF") + String("                             ").substring(0, 36 - String(lastBoatStatus.lora.snr, 1).length() - String(lastBoatStatus.lora.adaptiveMode ? "ON" : "OFF").length()) + "║");
+        Serial.println("║   MC Connected: " + String(lastBoatStatus.lora.missionControlConnected ? "YES" : "NO") + String("                                  ").substring(0, 44 - String(lastBoatStatus.lora.missionControlConnected ? "YES" : "NO").length()) + "║");
+        Serial.println("║   Packets RX/TX: " + String(lastBoatStatus.lora.packetsReceived) + "/" + String(lastBoatStatus.lora.packetsSent) + String("                                ").substring(0, 42 - String(lastBoatStatus.lora.packetsReceived).length() - String(lastBoatStatus.lora.packetsSent).length()) + "║");
+        
+        // Sensor Status
+        Serial.println("║ Sensors:                                                         ║");
+        Serial.println("║   Motors: " + String(lastBoatStatus.sensors.motor1Temp, 1) + "°C / " + String(lastBoatStatus.sensors.motor2Temp, 1) + "°C" + String("                              ").substring(0, 36 - String(lastBoatStatus.sensors.motor1Temp, 1).length() - String(lastBoatStatus.sensors.motor2Temp, 1).length()) + "║");
+        Serial.println("║   Battery: " + String(lastBoatStatus.sensors.batteryVoltage, 1) + "V / " + String(lastBoatStatus.sensors.batteryPercent) + "%" + String("                             ").substring(0, 37 - String(lastBoatStatus.sensors.batteryVoltage, 1).length() - String(lastBoatStatus.sensors.batteryPercent).length()) + "║");
+        Serial.println("║   Current: " + String(lastBoatStatus.sensors.batteryCurrent, 1) + "A" + String("                                      ").substring(0, 49 - String(lastBoatStatus.sensors.batteryCurrent, 1).length()) + "║");
+        Serial.println("║   Warnings: Volt:" + String(lastBoatStatus.sensors.lowVoltageWarning ? "YES" : "NO") + ", Temp:" + String(lastBoatStatus.sensors.overtemperatureWarning ? "YES" : "NO") + String("                     ").substring(0, 31 - String(lastBoatStatus.sensors.lowVoltageWarning ? "YES" : "NO").length() - String(lastBoatStatus.sensors.overtemperatureWarning ? "YES" : "NO").length()) + "║");
+        
+        // Navigation Status
+        Serial.println("║ Navigation:                                                      ║");
+        String navModeStr[] = {"MANUAL", "WAYPOINT", "RTH", "STATION"};
+        Serial.println("║   Mode: " + navModeStr[lastBoatStatus.navigation.mode] + ", Active: " + String(lastBoatStatus.navigation.navigationActive ? "YES" : "NO") + String("                        ").substring(0, 34 - navModeStr[lastBoatStatus.navigation.mode].length() - String(lastBoatStatus.navigation.navigationActive ? "YES" : "NO").length()) + "║");
+        Serial.println("║   Waypoints: " + String(lastBoatStatus.navigation.currentWaypoint) + "/" + String(lastBoatStatus.navigation.totalWaypoints) + String("                                       ").substring(0, 46 - String(lastBoatStatus.navigation.currentWaypoint).length() - String(lastBoatStatus.navigation.totalWaypoints).length()) + "║");
+        Serial.println("║   Distance to target: " + String(lastBoatStatus.navigation.distanceToTarget, 1) + "m" + String("                            ").substring(0, 38 - String(lastBoatStatus.navigation.distanceToTarget, 1).length()) + "║");
+        
+        // System Info
+        Serial.println("║ System:                                                          ║");
+        Serial.println("║   Uptime: " + String(lastBoatStatus.uptime) + "s, Health: " + String(lastBoatStatus.systemHealth) + "%" + String("                         ").substring(0, 35 - String(lastBoatStatus.uptime).length() - String(lastBoatStatus.systemHealth).length()) + "║");
+        Serial.println("║   Free Heap: " + String(lastBoatStatus.freeHeap) + " bytes" + String("                                ").substring(0, 42 - String(lastBoatStatus.freeHeap).length()) + "║");
+        Serial.println("║   Update Mode: " + String(lastBoatStatus.firmwareUpdateMode ? "YES" : "NO") + String("                                     ").substring(0, 46 - String(lastBoatStatus.firmwareUpdateMode ? "YES" : "NO").length()) + "║");
+        
+        Serial.println("╚══════════════════════════════════════════════════════════════════╝");
+    }
+
 private:
     LoRaCore *loraComm;
     PacketId_t nextPacketId = 0;
@@ -753,6 +836,11 @@ private:
     uint8_t lastBatteryPercent = 0;
     uint8_t lastSystemHealth = 100;
     bool useStructuredData = true; // Использовать структурированные данные
+    
+    // 🚀 NEW: Full boat status from structured data
+    BoatSettings lastBoatStatus;    // Полное состояние лодки
+    unsigned long lastBoatStatusUpdate = 0; // Время последнего обновления
+    bool hasValidBoatStatus = false; // Есть ли валидные данные
     
     // 🚀 NEW: Active connection monitoring with double ping strategy
     unsigned long lastPingSent = 0;
@@ -1063,6 +1151,19 @@ private:
                        " RSSI:" + String(hb.rssi) + 
                        " Bat:" + String(hb.batteryPercent) + "%");
                        
+                // 🚀 NEW: Update full boat status from heartbeat
+                lastBoatStatus.gps.position.latitude = hb.latitude;
+                lastBoatStatus.gps.position.longitude = hb.longitude;
+                lastBoatStatus.gps.position.timestamp = millis();
+                lastBoatStatus.gps.hasFix = true; // Предполагаем, что если есть данные, то есть фикс
+                lastBoatStatus.lora.currentProfile = hb.loraProfile;
+                lastBoatStatus.lora.rssi = hb.rssi;
+                lastBoatStatus.sensors.batteryPercent = hb.batteryPercent;
+                lastBoatStatus.systemHealth = hb.systemHealth;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+                hasValidBoatStatus = true;
+                       
                 lastKnownBoatPosition.latitude = hb.latitude;   // Сохраняем состояние лодки (если нужно)
                 lastKnownBoatPosition.longitude = hb.longitude;
                 lastRSSI = hb.rssi;
@@ -1079,14 +1180,56 @@ private:
             GPSStatus gps;
             if (StructuredDataManager::parseGPS(buf, hdr.payloadLen, gps)) {
                 addLog("[MC][CMD_STRUCTURED_GPS] GPS: " + gps.toString());
+                
+                // 🚀 NEW: Update boat status GPS data
+                lastBoatStatus.gps = gps;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+                hasValidBoatStatus = true;
             } else {
                 addLog("[MC] ❌ Failed to parse GPS data");
             }
             break;
         }
         case CMD_STRUCTURED_MOTORS:
+        {
+            addLog("[MC][CMD_STRUCTURED_MOTORS] Motor data received (" + String(hdr.payloadLen) + " bytes)");
+            // TODO: Implement StructuredDataManager::parseMotors()
+            // MotorStatus motors;
+            // if (StructuredDataManager::parseMotors(buf, hdr.payloadLen, motors)) {
+            //     lastBoatStatus.motors = motors;
+            //     lastBoatStatus.updateTimestamp();
+            //     lastBoatStatusUpdate = millis();
+            //     hasValidBoatStatus = true;
+            // }
+            break;
+        }
         case CMD_STRUCTURED_SENSORS:
+        {
+            addLog("[MC][CMD_STRUCTURED_SENSORS] Sensor data received (" + String(hdr.payloadLen) + " bytes)");
+            // TODO: Implement StructuredDataManager::parseSensors()
+            // SensorStatus sensors;
+            // if (StructuredDataManager::parseSensors(buf, hdr.payloadLen, sensors)) {
+            //     lastBoatStatus.sensors = sensors;
+            //     lastBoatStatus.updateTimestamp();
+            //     lastBoatStatusUpdate = millis();
+            //     hasValidBoatStatus = true;
+            // }
+            break;
+        }
         case CMD_STRUCTURED_NAVIGATION:
+        {
+            addLog("[MC][CMD_STRUCTURED_NAVIGATION] Navigation data received (" + String(hdr.payloadLen) + " bytes)");
+            // TODO: Implement StructuredDataManager::parseNavigation()
+            // NavigationStatus navigation;
+            // if (StructuredDataManager::parseNavigation(buf, hdr.payloadLen, navigation)) {
+            //     lastBoatStatus.navigation = navigation;
+            //     lastBoatStatus.updateTimestamp();
+            //     lastBoatStatusUpdate = millis();
+            //     hasValidBoatStatus = true;
+            // }
+            break;
+        }
         case CMD_STRUCTURED_FRAGMENT:
         {
             addLog("[MC] 📦 Struct data type: " + String((char)hdr.packetType) + ", size: " + String(hdr.payloadLen));
