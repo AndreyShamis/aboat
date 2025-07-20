@@ -982,23 +982,15 @@ private:
                 vTaskDelay(pdMS_TO_TICKS(10)); 
                 sendAsaResponse(loraComm, nextPacketId++, profileIndex, sender);
                 addLog("3 [MC] ASA Response sent to LORA");
-                vTaskDelay(pdMS_TO_TICKS(450)); 
+                vTaskDelay(pdMS_TO_TICKS(900)); 
             }
             else
             {
                 addLog("4 [MC] ASA Response received, applying profile index " + String(profileIndex));
             }
-            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getPendingCount() > 0) {
-                addLog("[MC] Outgoing queue count or pending: " + String(loraComm->getOutgoingQueueCount()));
-                vTaskDelay(pdMS_TO_TICKS(401)); // Ждем, чтобы пакет ушел
-            }
-            if(loraComm->getPendingCount() > 0) {
-                addLog("[MC] Get Pending Count: " + String(loraComm->getPendingCount()));
-                vTaskDelay(pdMS_TO_TICKS(409)); // Ждем, чтобы пакет ушел
-            }
-            if(loraComm->getOutgoingQueueCount() > 0 || loraComm->getPendingCount() > 0) {
-                addLog("[MC] Outgoing queue count or pending:" + String(loraComm->getOutgoingQueueCount()));
-                vTaskDelay(pdMS_TO_TICKS(607)); // Ждем, чтобы пакет ушел
+            uint8_t loopCounter = 0;
+            while ((loraComm->getOutgoingQueueCount() > 0 || loraComm->getPendingCount() > 0) && loopCounter++ < 5) {
+                vTaskDelay(pdMS_TO_TICKS(500));
             }
             applyProfile(profileIndex);
             break;

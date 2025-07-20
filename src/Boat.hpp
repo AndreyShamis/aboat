@@ -43,7 +43,7 @@ static constexpr unsigned long CONTROL_INTERVAL = 100; // 10 Hz
 static constexpr unsigned long RSSI_REPORT_INTERVAL = 27123;
 static constexpr unsigned long PING_INTERVAL = 40013;
 static constexpr unsigned long ASA_TIMEOUT = 15007;
-static constexpr unsigned long ACTIVITY_TIMEOUT = 35777;
+static constexpr unsigned long ACTIVITY_TIMEOUT = 42777;
 static constexpr unsigned long ADAPTIVE_SWITCH_INTERVAL = 8000; // 🚀 Reduced from 25s to 8s for faster adaptation
 
 // ============================================================================
@@ -85,13 +85,11 @@ public:
     bool statusTaskRunning = false;
 
     // 🚀 NEW: Structured data transmission system
-    BoatSettings currentBoatSettings;      // Текущее состояние лодки
+    BoatSettings bs;      // Текущее состояние лодки
     unsigned long lastHeartbeatSent = 0;   // Время последнего heartbeat
     unsigned long lastFullStatusSent = 0;  // Время последнего полного статуса
     unsigned long lastDataUpdate = 0;      // Время последнего обновления данных
     bool useStructuredData = true;         // Флаг использования новой системы
-    static constexpr unsigned long HEARTBEAT_INTERVAL = 5000;     // 5 секунд
-    static constexpr unsigned long FULL_STATUS_INTERVAL = 30000;  // 30 секунд
     static constexpr unsigned long DATA_UPDATE_INTERVAL = 1000;   // 1 секунда
 
     bool waitingForASAAck = false;
@@ -160,6 +158,69 @@ public:
         }
     }
 
+    // Helper function to register command with response
+    void registerCommandWithResponse(const String& cmd, std::function<String(const String&)> handler)
+    {
+        parser.registerCommand(cmd, [this, handler](const String &arg) {
+            String response = handler(arg);
+            sendResponseToMissionControl(response);
+        });
+    }
+    // Helper function for LoRa profile management
+    String handleLoRaProfileCommand(const String& arg)
+    {
+        String response = "L:";
+        if (arg == "S" || arg == "status") {
+            String status = "Profile:" + String(loraComm->getCurrentProfileIndex()) + 
+                   ",RSSI:" + String(smoothedRssi) + "dBm" +
+                   ",Adaptive:" + String(allowAdaptiveLoraSwitch ? "ON" : "OFF");
+            addLog("[LORA] " + status);
+            response += status;
+        } else if (arg.startsWith("P") || arg.startsWith("profile:")) {
+            String profileStr = arg.startsWith("profile:") ? arg.substring(8) : arg.substring(1);
+            int profileIndex = profileStr.toInt();
+            response += applyLoRaProfile(profileIndex);
+        } else if (arg == "adapt") {
+            adaptiveLoraUpdate();
+            response += "Adaptive LoRa triggered";
+        } else if (arg.startsWith("A:")) {
+            response += handleAdaptiveControl(arg.substring(2));
+        } else if (arg.length() > 0 && arg[0] >= '0' && arg[0] <= '9') {
+            int profileIndex = arg.toInt();
+            response += applyLoRaProfile(profileIndex);
+        } else {
+            response += "Current profile:" + String(loraComm->getCurrentProfileIndex()) + 
+                       ",RSSI:" + String(smoothedRssi) + "dBm";
+        }
+        return response;
+    }
+
+    String applyLoRaProfile(int profileIndex)
+    {
+        if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
+            applyProfile(profileIndex);
+            addLog("[LORA] Manually switched to profile " + String(profileIndex));
+            return "Profile changed to " + String(profileIndex);
+        } else {
+            return "Invalid profile index:" + String(profileIndex);
+        }
+    }
+
+    String handleAdaptiveControl(const String& adaptiveStr)
+    {
+        if (adaptiveStr == "0") {
+            allowAdaptiveLoraSwitch = false;
+            addLog("[LORA] Adaptive switching DISABLED by command");
+            return "Adaptive switching disabled";
+        } else if (adaptiveStr == "1") {
+            allowAdaptiveLoraSwitch = true;
+            addLog("[LORA] Adaptive switching ENABLED by command");
+            return "Adaptive switching enabled";
+        } else {
+            return "Invalid adaptive command (use A:0 or A:1)";
+        }
+    }
+
     void setup()
     {
         delay(3); // Задержка для отладки
@@ -193,40 +254,9 @@ public:
 
         addLog("MPU9250 + Madgwick initialized");
 
-        if (!ina3221.begin(0X41, &Wire)) // Инициализация INA3221 на адресе 0x41
-        {
-            addLog("-INA3221 not found at address 0x41");
-        }
-        else
-        {
-            addLog("+INA3221 found at address 0x41");
-            ina3221.setAveragingMode(INA3221_AVG_16_SAMPLES);
-            for (uint8_t i = 0; i < 3; i++)
-            {
-                ina3221.setShuntResistance(i, 0.1);
-            }
-
-            // Set a power valid alert to tell us if ALL channels are between the two
-            // limits:
-            ina3221.setPowerValidLimits(4.0 /* lower limit */, 18.0 /* upper limit */);
-        }
-        if (!ina3221_low.begin(0X43, &Wire)) // Инициализация INA3221 на адресе 0x43
-        {
-            addLog("-INA3221 LOW not found at address 0x43");
-        }
-        else
-        {
-            addLog("+INA3221v LOW found at address 0x43");
-            ina3221_low.setAveragingMode(INA3221_AVG_16_SAMPLES);
-            for (uint8_t i = 0; i < 3; i++)
-            {
-                ina3221.setShuntResistance(i, 0.1);
-            }
-
-            // Set a power valid alert to tell us if ALL channels are between the two
-            // limits:
-            ina3221_low.setPowerValidLimits(3.2 /* lower limit */, 10.0 /* upper limit */);
-        }
+        // Инициализация INA3221 датчиков
+        initINA3221(ina3221, 0x41, "INA3221", 4.0f, 18.0f);
+        initINA3221(ina3221_low, 0x43, "INA3221 LOW", 3.2f, 10.0f);
         SystemStatus::printResetReason();
         SystemStatus::printWakeupReason();
         SystemStatus::printUptime();
@@ -275,351 +305,35 @@ public:
                                     int speed = arg.toInt();
                                     oilPump.setSpeed(speed); });
 
-        // Enhanced diagnostic commands
-        parser.registerCommand("D", [this](const String &arg)
-                               {
-                                    String response = "D:";
-                                    if (arg == "S") {
-                                        String status = safetyMonitor.getStatusString();
-                                        addLog("[DIAG] " + status);
-                                        response += "Safety:" + status;
-                                    } else if (arg == "P") {
-                                        String perfInfo = "avg=" + String(performanceMetrics.getAverageKeepTime()) + 
-                                               "ms,max=" + String(performanceMetrics.maxKeepDuration) + "ms";
-                                        addLog("[DIAG] Performance: " + perfInfo);
-                                        response += "Performance:" + perfInfo;
-                                    } else if (arg == "T") {
-                                        String tempInfo = "M1=" + String(temps.get(MOTOR1)) + 
-                                               "C,M2=" + String(temps.get(MOTOR2)) + "C";
-                                        addLog("[DIAG] Temps: " + tempInfo);
-                                        response += "Temps:" + tempInfo;
-                                    } else if (arg == "R") {
-                                        performanceMetrics.reset();
-                                        addLog("[DIAG] Performance metrics reset");
-                                        response += "Performance metrics reset";
-                                    } else if (arg == "full" || arg.isEmpty()) {
-                                        // Full diagnostic report - build components safely
-                                        String safetyInfo = safetyMonitor.getStatusString();
-                                        if (safetyInfo.length() > 30) safetyInfo = safetyInfo.substring(0, 30) + "...";
-                                        
-                                        String perfInfo = "avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms";
-                                        
-                                        String tempInfo = "M1=" + String(temps.get(MOTOR1), 1) + "C,M2=" + String(temps.get(MOTOR2), 1) + "C";
-                                        
-                                        String gpsInfo = (gnss.hasValidFix() ? "OK" : "NO_FIX");
-                                        
-                                        String heapInfo = String(ESP.getFreeHeap());
-                                        
-                                        String fullDiag = "Safety:" + safetyInfo + 
-                                                         ";Perf:" + perfInfo +
-                                                         ";Temps:" + tempInfo +
-                                                         ";GPS:" + gpsInfo +
-                                                         ";Heap:" + heapInfo;
-                                        
-                                        addLog("[DIAG] Full diagnostic (" + String(fullDiag.length()) + " bytes): " + fullDiag);
-                                        response += fullDiag;
-                                    } else if (arg == "extended" || arg == "ext") {
-                                        // Extended diagnostic report with more details
-                                        String extDiag = "System:OK;";
-                                        extDiag += "Uptime:" + String(millis()/1000) + "s;";
-                                        extDiag += "FreeHeap:" + String(ESP.getFreeHeap()) + ";";
-                                        extDiag += "MinFreeHeap:" + String(ESP.getFlashChipSize()) + ";";
-                                        extDiag += "FlashSize:" + String(ESP.getFlashChipSize()) + ";";
-                                        extDiag += "CPUFreq:" + String(ESP.getCpuFreqMHz()) + "MHz;";
-                                        extDiag += "ChipModel:" + String(ESP.getChipModel()) + ";";
-                                        extDiag += "TempSensors:" + String(temps.getSensorCount()) + ";";
-                                        extDiag += "WiFiStatus:" + String(WiFi.status()) + ";";
-                                        extDiag += "LoRaProfile:" + String(loraComm->getCurrentProfileIndex()) + ";";
-                                        extDiag += "Safety:" + safetyMonitor.getStatusString() + ";";
-                                        extDiag += "Performance:avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms;";
-                                        extDiag += "Stack:" + stackMonitor.getCompactStatus();
-                                        
-                                        addLog("[DIAG] Extended diagnostic (" + String(extDiag.length()) + " bytes): " + extDiag);
-                                        response += extDiag;
-                                    } else if (arg == "stack" || arg == "st") {
-                                        // Stack diagnostic report
-                                        String stackReport = stackMonitor.getReport();
-                                        addLog("[DIAG] Stack report:");
-                                        addLog(stackReport);
-                                        response += "Stack Report:\n" + stackReport;
-                                    } else {
-                                        response += "Unknown diagnostic command:" + arg;
-                                    }
-                                    
-                                    // Send response back to MissionControl
-                                    sendResponseToMissionControl(response); });
+        // LoRa commands with simplified registration
+        registerCommandWithResponse("L", [this](const String &arg) {
+            return handleLoRaProfileCommand(arg);
+        });
 
-        parser.registerCommand("L", [this](const String &arg)
-                               {
-                                    String response = "L:";
-                                    if (arg == "S" || arg == "status") {
-                                        String status = "Profile:" + String(loraComm->getCurrentProfileIndex()) + 
-                                               ",RSSI:" + String(smoothedRssi) + "dBm" +
-                                               ",Adaptive:" + String(allowAdaptiveLoraSwitch ? "ON" : "OFF");
-                                        addLog("[LORA] " + status);
-                                        response += status;
-                                    } else if (arg.startsWith("P") || arg.startsWith("profile:")) {
-                                        String profileStr = arg.startsWith("profile:") ? arg.substring(8) : arg.substring(1);
-                                        int profileIndex = profileStr.toInt();
-                                        if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
-                                            applyProfile(profileIndex);
-                                            addLog("[LORA] Manually switched to profile " + String(profileIndex));
-                                            response += "Profile changed to " + String(profileIndex);
-                                        } else {
-                                            response += "Invalid profile index:" + String(profileIndex);
-                                        }
-                                    } else if (arg == "adapt") {
-                                        // Trigger adaptive LoRa
-                                        adaptiveLoraUpdate();
-                                        response += "Adaptive LoRa triggered";
-                                    } else if (arg.startsWith("A:")) {
-                                        // Adaptive switching control: A:0 = disable, A:1 = enable
-                                        String adaptiveStr = arg.substring(2);
-                                        if (adaptiveStr == "0") {
-                                            allowAdaptiveLoraSwitch = false;
-                                            addLog("[LORA] Adaptive switching DISABLED by command");
-                                            response += "Adaptive switching disabled";
-                                        } else if (adaptiveStr == "1") {
-                                            allowAdaptiveLoraSwitch = true;
-                                            addLog("[LORA] Adaptive switching ENABLED by command");
-                                            response += "Adaptive switching enabled";
-                                        } else {
-                                            response += "Invalid adaptive command (use A:0 or A:1)";
-                                        }
-                                    } else if (arg.length() > 0 && arg[0] >= '0' && arg[0] <= '9') {
-                                        // Direct profile number input (e.g., "1", "12", etc.)
-                                        int profileIndex = arg.toInt();
-                                        if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
-                                            applyProfile(profileIndex);
-                                            addLog("[LORA] Manually switched to profile " + String(profileIndex));
-                                            response += "Profile changed to " + String(profileIndex);
-                                        } else {
-                                            response += "Invalid profile index:" + String(profileIndex);
-                                        }
-                                    } else {
-                                        response += "Current profile:" + String(loraComm->getCurrentProfileIndex()) + ",RSSI:" + String(smoothedRssi) + "dBm";
-                                    }
-                                    
-                                    // Send response back to MissionControl
-                                    sendResponseToMissionControl(response); });
+        // Diagnostic commands with simplified registration
+        registerCommandWithResponse("D", [this](const String &arg) {
+            return handleDiagnosticCommand(arg);
+        });
 
-        // Navigation commands
-        parser.registerCommand("N", [this](const String &arg)
-                               {
-                                    String response = "N:";
-                                    if (arg == "M" || arg == "manual") {
-                                        autoNav.setMode(AutoNavigation::MANUAL);
-                                        addLog("[NAV] Switched to manual mode");
-                                        response += "Manual mode activated";
-                                    } else if (arg == "R" || arg == "home") {
-                                        autoNav.setMode(AutoNavigation::RETURN_TO_HOME);
-                                        addLog("[NAV] Return to home initiated");
-                                        response += "Return to home mode activated";
-                                    } else if (arg == "S" || arg == "station") {
-                                        autoNav.setMode(AutoNavigation::STATION_KEEPING);
-                                        addLog("[NAV] Station keeping mode");
-                                        response += "Station keeping mode activated";
-                                    } else if (arg == "H" || arg == "sethome") {
-                                        // Set current position as home
-                                        if (gnss.hasValidFix()) {
-                                            autoNav.setHome(gnss.getLatitude(), gnss.getLongitude());
-                                            String homePos = String(gnss.getLatitude(), 6) + "," + String(gnss.getLongitude(), 6);
-                                            addLog("[NAV] Home position set: " + homePos);
-                                            response += "Home set at " + homePos;
-                                        } else {
-                                            addLog("[NAV] Cannot set home - no GPS fix");
-                                            response += "Error: No GPS fix available";
-                                        }
-                                    } else if (arg.startsWith("start:")) {
-                                        // Start navigation to specific coordinates: start:lat,lon
-                                        String coords = arg.substring(6);
-                                        int commaIndex = coords.indexOf(',');
-                                        if (commaIndex > 0) {
-                                            float lat = coords.substring(0, commaIndex).toFloat();
-                                            float lon = coords.substring(commaIndex + 1).toFloat();
-                                            autoNav.setTarget(lat, lon);
-                                            autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
-                                            addLog("[NAV] Navigation started to: " + String(lat, 6) + "," + String(lon, 6));
-                                            response += "Navigation started to " + String(lat, 6) + "," + String(lon, 6);
-                                        } else {
-                                            response += "Error: Invalid coordinates format";
-                                        }
-                                    } else if (arg == "stop") {
-                                        autoNav.setMode(AutoNavigation::MANUAL);
-                                        response += "Navigation stopped";
-                                    } else if (arg == "pause") {
-                                        autoNav.pause();
-                                        response += "Navigation paused";
-                                    } else if (arg == "resume") {
-                                        autoNav.resume();
-                                        response += "Navigation resumed";
-                                    } else if (arg.startsWith("mode:")) {
-                                        String mode = arg.substring(5);
-                                        if (mode == "manual") autoNav.setMode(AutoNavigation::MANUAL);
-                                        else if (mode == "waypoint") autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
-                                        else if (mode == "home") autoNav.setMode(AutoNavigation::RETURN_TO_HOME);
-                                        else if (mode == "station") autoNav.setMode(AutoNavigation::STATION_KEEPING);
-                                        response += "Mode set to " + mode;
-                                    } else {
-                                        String status = autoNav.getStatusString();
-                                        addLog("[NAV] Status: " + status);
-                                        response += "Status:" + status;
-                                    }
-                                    
-                                    // Send response back to MissionControl
-                                    sendResponseToMissionControl(response); });
+        // Navigation commands with simplified registration
+        registerCommandWithResponse("N", [this](const String &arg) {
+            return handleNavigationCommand(arg);
+        });
 
-        parser.registerCommand("W", [this](const String &arg)
-                               {
-                                    String response = "W:";
-                                    if (arg.startsWith("A") || arg.startsWith("add:")) {
-                                        // Format: WA55.123456,37.654321 or W add:55.123456,37.654321
-                                        String coords = arg.startsWith("add:") ? arg.substring(4) : arg.substring(1);
-                                        int commaIndex = coords.indexOf(',');
-                                        if (commaIndex > 0) {
-                                            float lat = coords.substring(0, commaIndex).toFloat();
-                                            float lon = coords.substring(commaIndex + 1).toFloat();
-                                            autoNav.addWaypoint(lat, lon);
-                                            addLog("[NAV] Waypoint added: " + String(lat, 6) + "," + String(lon, 6));
-                                            response += "Waypoint added:" + String(lat, 6) + "," + String(lon, 6);
-                                        } else {
-                                            response += "Error: Invalid waypoint format";
-                                        }
-                                    } else if (arg == "S" || arg == "start") {
-                                        autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
-                                        addLog("[NAV] Waypoint following started");
-                                        response += "Waypoint following started";
-                                    } else if (arg == "C" || arg == "clear") {
-                                        autoNav.clearWaypoints();
-                                        addLog("[NAV] Waypoints cleared");
-                                        response += "Waypoints cleared";
-                                    } else if (arg == "status") {
-                                        // Web interface status
-                                        response += "Web interface active,clients:" + String(WiFi.softAPgetStationNum());
-                                    } else if (arg == "update") {
-                                        // Update web interface (placeholder)
-                                        response += "Web interface updated";
-                                    } else {
-                                        response += "Waypoint count:" + String(autoNav.getWaypointCount());
-                                    }
-                                    
-                                    // Send response back to MissionControl
-                                    sendResponseToMissionControl(response); });
+        // Waypoint commands with simplified registration
+        registerCommandWithResponse("W", [this](const String &arg) {
+            return handleWaypointCommand(arg);
+        });
 
-        // Time synchronization and management
-        parser.registerCommand("T", [this](const String &arg)
-                               {
-                                    String response = "T:";
-                                    if (arg == "S" || arg == "sync") {
-                                        if (gnss.isTimeUpdated()) {
-                                            gnss.syncSystemTimeFromGPS();
-                                            time_t now = time(nullptr);
-                                            addLog("🕒 GPS time sync forced: " + String(now));
-                                            response += "GPS time synced:" + String(now);
-                                        } else {
-                                            addLog("🕒 GPS time not available for sync");
-                                            response += "GPS time not available";
-                                        }
-                                    } else if (arg == "status" || arg.isEmpty()) {
-                                        time_t now = time(nullptr);
-                                        bool synced = (now > 1600000000);
-                                        String timeStr = this->timeStr();
-                                        String status = "Time:" + timeStr + 
-                                               ",Synced:" + String(synced ? "YES" : "NO") + 
-                                               ",GPS_Updated:" + String(gnss.isTimeUpdated() ? "YES" : "NO");
-                                        addLog("🕒 " + status);
-                                        response += status;
-                                    } else if (arg == "reset") {
-                                        // Reset system time to epoch (testing purposes)
-                                        struct timeval tv = {0, 0};
-                                        settimeofday(&tv, NULL);
-                                        addLog("🕒 System time reset");
-                                        response += "System time reset";
-                                    } else {
-                                        response += "Unknown time command:" + arg;
-                                    }
-                                    
-                                    // Send response back to MissionControl
-                                    sendResponseToMissionControl(response); });
+        // Time commands with simplified registration
+        registerCommandWithResponse("T", [this](const String &arg) {
+            return handleTimeCommand(arg);
+        });
 
-        // 🚀 NEW: Data transmission mode control
-        parser.registerCommand("DM", [this](const String &arg)
-                               {
-                                    String response = "DM:";
-                                    if (arg == "S" || arg == "structured") {
-                                        useStructuredData = true;
-                                        addLog("📦 Switched to structured data transmission");
-                                        response += "structured data enabled";
-                                    } else if (arg == "J" || arg == "json") {
-                                        useStructuredData = false;
-                                        addLog("📄 Switched to JSON data transmission");
-                                        response += "JSON data enabled";
-                                    } else if (arg == "H" || arg == "heartbeat") {
-                                        if (useStructuredData) {
-                                            sendStructuredHeartbeat();
-                                            response += "structured heartbeat sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "F" || arg == "full") {
-                                        if (useStructuredData) {
-                                            sendStructuredFullStatus();
-                                            response += "full structured status sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "G" || arg == "gps") {
-                                        if (useStructuredData) {
-                                            sendStructuredGPS();
-                                            response += "GPS data sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "M" || arg == "motors") {
-                                        if (useStructuredData) {
-                                            sendStructuredMotors();
-                                            response += "motor data sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "SENS" || arg == "sensors") {
-                                        if (useStructuredData) {
-                                            sendStructuredSensors();
-                                            response += "sensor data sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "L" || arg == "lora") {
-                                        if (useStructuredData) {
-                                            sendStructuredLoRaStatus();
-                                            response += "LoRa status sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "N" || arg == "navigation") {
-                                        if (useStructuredData) {
-                                            sendStructuredNavigation();
-                                            response += "navigation data sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "SYS" || arg == "system") {
-                                        if (useStructuredData) {
-                                            sendStructuredSystemInfo();
-                                            response += "system info sent";
-                                        } else {
-                                            response += "structured mode disabled";
-                                        }
-                                    } else if (arg == "?") {
-                                        response += String(useStructuredData ? "structured" : "json") + 
-                                                   ", HB:" + String((millis() - lastHeartbeatSent)/1000) + "s ago" +
-                                                   ", Full:" + String((millis() - lastFullStatusSent)/1000) + "s ago";
-                                    } else {
-                                        response += "Usage: DM:[S|J|H|F|G|M|SENS|L|N|SYS|?] (Structured/Json/Heartbeat/Full/Gps/Motors/Sensors/LoRa/Nav/System/status)";
-                                    }
-                                    
-                                    // Send response back to MissionControl
-                                    sendResponseToMissionControl(response); });
+        // Data mode commands with simplified registration
+        registerCommandWithResponse("DM", [this](const String &arg) {
+            return handleDataModeCommand(arg);
+        });
 
         // 📶 RSSI Report command
         parser.registerCommand("RSSI", [this](const String &arg)
@@ -694,7 +408,312 @@ public:
 
     unsigned long lastSync = 0;
 
+    // Helper for structured data commands
+    String handleStructuredDataCommand(const String& command)
+    {
+        if (!useStructuredData) {
+            return "structured mode disabled";
+        }
+        
+        if (command == "H" || command == "heartbeat") {
+            sendStructuredHeartbeat();
+            return "structured heartbeat sent";
+        } else if (command == "F" || command == "full") {
+            sendStructuredFullStatus();
+            return "full structured status sent";
+        } else if (command == "G" || command == "gps") {
+            sendStructuredGPS();
+            return "GPS data sent";
+        } else if (command == "M" || command == "motors") {
+            sendStructuredMotors();
+            return "motor data sent";
+        } else if (command == "SENS" || command == "sensors") {
+            sendStructuredSensors();
+            return "sensor data sent";
+        } else if (command == "L" || command == "lora") {
+            sendStructuredLoRaStatus();
+            return "LoRa status sent";
+        } else if (command == "N" || command == "navigation") {
+            sendStructuredNavigation();
+            return "navigation data sent";
+        } else if (command == "SYS" || command == "system") {
+            sendStructuredSystemInfo();
+            return "system info sent";
+        }
+        
+        return "unknown structured command";
+    }
 
+    // Helper function for diagnostic commands
+    String handleDiagnosticCommand(const String& arg)
+    {
+        String response = "D:";
+        if (arg == "S") {
+            String status = safetyMonitor.getStatusString();
+            addLog("[DIAG] " + status);
+            response += "Safety:" + status;
+        } else if (arg == "P") {
+            String perfInfo = "avg=" + String(performanceMetrics.getAverageKeepTime()) + 
+                   "ms,max=" + String(performanceMetrics.maxKeepDuration) + "ms";
+            addLog("[DIAG] Performance: " + perfInfo);
+            response += "Performance:" + perfInfo;
+        } else if (arg == "T") {
+            String tempInfo = "M1=" + String(temps.get(MOTOR1)) + 
+                   "C,M2=" + String(temps.get(MOTOR2)) + "C";
+            addLog("[DIAG] Temps: " + tempInfo);
+            response += "Temps:" + tempInfo;
+        } else if (arg == "R") {
+            performanceMetrics.reset();
+            addLog("[DIAG] Performance metrics reset");
+            response += "Performance metrics reset";
+        } else if (arg == "full" || arg.isEmpty()) {
+            response += buildFullDiagnostic();
+        } else if (arg == "extended" || arg == "ext") {
+            response += buildExtendedDiagnostic();
+        } else if (arg == "stack" || arg == "st") {
+            String stackReport = stackMonitor.getReport();
+            addLog("[DIAG] Stack report:");
+            addLog(stackReport);
+            response += "Stack Report:\n" + stackReport;
+        } else {
+            response += "Unknown diagnostic command:" + arg;
+        }
+        return response;
+    }
+
+    String buildFullDiagnostic()
+    {
+        String safetyInfo = safetyMonitor.getStatusString();
+        if (safetyInfo.length() > 30) safetyInfo = safetyInfo.substring(0, 30) + "...";
+        
+        String perfInfo = "avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms";
+        String tempInfo = "M1=" + String(temps.get(MOTOR1), 1) + "C,M2=" + String(temps.get(MOTOR2), 1) + "C";
+        String gpsInfo = (gnss.hasValidFix() ? "OK" : "NO_FIX");
+        String heapInfo = String(ESP.getFreeHeap());
+        
+        String fullDiag = "Safety:" + safetyInfo + 
+                         ";Perf:" + perfInfo +
+                         ";Temps:" + tempInfo +
+                         ";GPS:" + gpsInfo +
+                         ";Heap:" + heapInfo;
+        
+        addLog("[DIAG] Full diagnostic (" + String(fullDiag.length()) + " bytes): " + fullDiag);
+        return fullDiag;
+    }
+
+    String buildExtendedDiagnostic()
+    {
+        String extDiag = "System:OK;";
+        extDiag += "Uptime:" + String(millis()/1000) + "s;";
+        extDiag += "FreeHeap:" + String(ESP.getFreeHeap()) + ";";
+        extDiag += "MinFreeHeap:" + String(ESP.getFlashChipSize()) + ";";
+        extDiag += "FlashSize:" + String(ESP.getFlashChipSize()) + ";";
+        extDiag += "CPUFreq:" + String(ESP.getCpuFreqMHz()) + "MHz;";
+        extDiag += "ChipModel:" + String(ESP.getChipModel()) + ";";
+        extDiag += "TempSensors:" + String(temps.getSensorCount()) + ";";
+        extDiag += "WiFiStatus:" + String(WiFi.status()) + ";";
+        extDiag += "LoRaProfile:" + String(loraComm->getCurrentProfileIndex()) + ";";
+        extDiag += "Safety:" + safetyMonitor.getStatusString() + ";";
+        extDiag += "Performance:avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms;";
+        extDiag += "Stack:" + stackMonitor.getCompactStatus();
+        
+        addLog("[DIAG] Extended diagnostic (" + String(extDiag.length()) + " bytes): " + extDiag);
+        return extDiag;
+    }
+
+    // Helper function for navigation commands
+    String handleNavigationCommand(const String& arg)
+    {
+        String response = "N:";
+        if (arg == "M" || arg == "manual") {
+            autoNav.setMode(AutoNavigation::MANUAL);
+            addLog("[NAV] Switched to manual mode");
+            response += "Manual mode activated";
+        } else if (arg == "R" || arg == "home") {
+            autoNav.setMode(AutoNavigation::RETURN_TO_HOME);
+            addLog("[NAV] Return to home initiated");
+            response += "Return to home mode activated";
+        } else if (arg == "S" || arg == "station") {
+            autoNav.setMode(AutoNavigation::STATION_KEEPING);
+            addLog("[NAV] Station keeping mode");
+            response += "Station keeping mode activated";
+        } else if (arg == "H" || arg == "sethome") {
+            response += handleSetHome();
+        } else if (arg.startsWith("start:")) {
+            response += handleNavigationStart(arg.substring(6));
+        } else if (arg == "stop") {
+            autoNav.setMode(AutoNavigation::MANUAL);
+            response += "Navigation stopped";
+        } else if (arg == "pause") {
+            autoNav.pause();
+            response += "Navigation paused";
+        } else if (arg == "resume") {
+            autoNav.resume();
+            response += "Navigation resumed";
+        } else if (arg.startsWith("mode:")) {
+            response += handleNavigationMode(arg.substring(5));
+        } else {
+            String status = autoNav.getStatusString();
+            addLog("[NAV] Status: " + status);
+            response += "Status:" + status;
+        }
+        return response;
+    }
+
+    String handleSetHome()
+    {
+        if (gnss.hasValidFix()) {
+            autoNav.setHome(gnss.getLatitude(), gnss.getLongitude());
+            String homePos = String(gnss.getLatitude(), 6) + "," + String(gnss.getLongitude(), 6);
+            addLog("[NAV] Home position set: " + homePos);
+            return "Home set at " + homePos;
+        } else {
+            addLog("[NAV] Cannot set home - no GPS fix");
+            return "Error: No GPS fix available";
+        }
+    }
+
+    String handleNavigationStart(const String& coords)
+    {
+        int commaIndex = coords.indexOf(',');
+        if (commaIndex > 0) {
+            float lat = coords.substring(0, commaIndex).toFloat();
+            float lon = coords.substring(commaIndex + 1).toFloat();
+            autoNav.setTarget(lat, lon);
+            autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
+            addLog("[NAV] Navigation started to: " + String(lat, 6) + "," + String(lon, 6));
+            return "Navigation started to " + String(lat, 6) + "," + String(lon, 6);
+        } else {
+            return "Error: Invalid coordinates format";
+        }
+    }
+
+    String handleNavigationMode(const String& mode)
+    {
+        if (mode == "manual") autoNav.setMode(AutoNavigation::MANUAL);
+        else if (mode == "waypoint") autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
+        else if (mode == "home") autoNav.setMode(AutoNavigation::RETURN_TO_HOME);
+        else if (mode == "station") autoNav.setMode(AutoNavigation::STATION_KEEPING);
+        return "Mode set to " + mode;
+    }
+
+    // Helper function for waypoint commands
+    String handleWaypointCommand(const String& arg)
+    {
+        String response = "W:";
+        if (arg.startsWith("A") || arg.startsWith("add:")) {
+            String coords = arg.startsWith("add:") ? arg.substring(4) : arg.substring(1);
+            int commaIndex = coords.indexOf(',');
+            if (commaIndex > 0) {
+                float lat = coords.substring(0, commaIndex).toFloat();
+                float lon = coords.substring(commaIndex + 1).toFloat();
+                autoNav.addWaypoint(lat, lon);
+                addLog("[NAV] Waypoint added: " + String(lat, 6) + "," + String(lon, 6));
+                response += "Waypoint added:" + String(lat, 6) + "," + String(lon, 6);
+            } else {
+                response += "Error: Invalid waypoint format";
+            }
+        } else if (arg == "S" || arg == "start") {
+            autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
+            addLog("[NAV] Waypoint following started");
+            response += "Waypoint following started";
+        } else if (arg == "C" || arg == "clear") {
+            autoNav.clearWaypoints();
+            addLog("[NAV] Waypoints cleared");
+            response += "Waypoints cleared";
+        } else if (arg == "status") {
+            response += "Web interface active,clients:" + String(WiFi.softAPgetStationNum());
+        } else if (arg == "update") {
+            response += "Web interface updated";
+        } else {
+            response += "Waypoint count:" + String(autoNav.getWaypointCount());
+        }
+        return response;
+    }
+
+    // Helper function for time commands
+    String handleTimeCommand(const String& arg)
+    {
+        String response = "T:";
+        if (arg == "S" || arg == "sync") {
+            if (gnss.isTimeUpdated()) {
+                gnss.syncSystemTimeFromGPS();
+                time_t now = time(nullptr);
+                addLog("🕒 GPS time sync forced: " + String(now));
+                response += "GPS time synced:" + String(now);
+            } else {
+                addLog("🕒 GPS time not available for sync");
+                response += "GPS time not available";
+            }
+        } else if (arg == "status" || arg.isEmpty()) {
+            time_t now = time(nullptr);
+            bool synced = (now > 1600000000);
+            String timeStr = this->timeStr();
+            String status = "Time:" + timeStr + 
+                   ",Synced:" + String(synced ? "YES" : "NO") + 
+                   ",GPS_Updated:" + String(gnss.isTimeUpdated() ? "YES" : "NO");
+            addLog("🕒 " + status);
+            response += status;
+        } else if (arg == "reset") {
+            struct timeval tv = {0, 0};
+            settimeofday(&tv, NULL);
+            addLog("🕒 System time reset");
+            response += "System time reset";
+        } else {
+            response += "Unknown time command:" + arg;
+        }
+        return response;
+    }
+
+    // Helper function for data mode commands
+    String handleDataModeCommand(const String& arg)
+    {
+        String response = "DM:";
+        if (arg == "S" || arg == "structured") {
+            useStructuredData = true;
+            addLog("📦 Switched to structured data transmission");
+            response += "structured data enabled";
+        } else if (arg == "J" || arg == "json") {
+            useStructuredData = false;
+            addLog("📄 Switched to JSON data transmission");
+            response += "JSON data enabled";
+        } else if (arg == "?") {
+            response += String(useStructuredData ? "structured" : "json") + 
+                       ", HB:" + String((millis() - lastHeartbeatSent)/1000) + "s ago" +
+                       ", Full:" + String((millis() - lastFullStatusSent)/1000) + "s ago";
+        } else {
+            // Handle structured data sub-commands
+            String subResponse = handleStructuredDataCommand(arg);
+            if (subResponse == "unknown structured command") {
+                response += "Usage: DM:[S|J|H|F|G|M|SENS|L|N|SYS|?] (Structured/Json/Heartbeat/Full/Gps/Motors/Sensors/LoRa/Nav/System/status)";
+            } else {
+                response += subResponse;
+            }
+        }
+        return response;
+    }
+
+    // Helper function for mission control deactivation logic
+    void deactivateMissionControl(const String& reason)
+    {
+        addLog("💔 " + reason);
+        missionCOntrolIsActivae = false;
+        PongRssi = 0;
+        
+        // 🔄 Отключаем адаптивное переключение при потере пульта
+        allowAdaptiveLoraSwitch = false;
+        addLog("❌ Adaptive LoRa switching disabled (MissionControl disconnected)");
+        
+        // Сбрасываем кэш для немедленного применения профиля 0
+        sensorCache.valid = false;
+        
+        // Если активен ASA режим - тоже выключаем
+        if (asaActive) {
+            addLog("⏳ ASA: Деактивация из-за потери MissionControl. Возврат к дефолтным LoRa-настройкам.");
+            restoreDefaultLoRaSettings();
+            asaActive = false;
+        }
+    }
 
     void keep()
     {
@@ -711,7 +730,7 @@ public:
         static unsigned long lastSafetyCheck = 0;
         static unsigned long lastStackCheck = 0;
 
-        if (millis() - lastSafetyCheck >= 3111)
+        if (millis() - lastSafetyCheck >= 6111)
         { // 10Hz для безопасности
             safetyMonitor.checkSystemHealth(temps, battery, lastPacketReceived);
 
@@ -725,7 +744,7 @@ public:
         }
 
 
-        if (millis() - lastStackCheck >= 60000)
+        if (millis() - lastStackCheck >= 1800000)
         {
             stackMonitor.update();
             if (stackMonitor.hasCriticalStackUsage())
@@ -757,22 +776,8 @@ public:
         if (missionCOntrolIsActivae && millis() - lastPacketReceived > ACTIVITY_TIMEOUT)
         {
             unsigned long timeoutSeconds = (millis() - lastPacketReceived) / 1000;
-            addLog("💔 MissionControl heartbeat timeout (" + String(timeoutSeconds) + "s > " + String(ACTIVITY_TIMEOUT/1000) + "s) - deactivating");
-            missionCOntrolIsActivae = false;
-            PongRssi = 0;
-            
-            // 🔄 Отключаем адаптивное переключение при потере пульта
-            allowAdaptiveLoraSwitch = false;
-            addLog("❌ Adaptive LoRa switching disabled (MissionControl disconnected)");
-            
-            // Сбрасываем кэш для немедленного применения профиля 0
-            sensorCache.valid = false;
-            // Если активен ASA режим - тоже выключаем
-            if (asaActive) {
-                addLog("⏳ ASA: Деактивация из-за потери MissionControl. Возврат к дефолтным LoRa-настройкам.");
-                restoreDefaultLoRaSettings();
-                asaActive = false;
-            }
+            deactivateMissionControl("MissionControl heartbeat timeout (" + String(timeoutSeconds) + 
+                                   "s > " + String(ACTIVITY_TIMEOUT/1000) + "s) - deactivating");
         }
 
         if (asaActive && millis() - lastPacketReceived > ACTIVITY_TIMEOUT)
@@ -824,13 +829,12 @@ public:
             oilPump.setSpeed(percent);
         }
 
-        // 📡 RSSI отчёты отправляются ТОЛЬКО по запросу, не автоматически
-        // static unsigned long lastRssiSent = 0;
-        // if (millis() - lastRssiSent > RSSI_REPORT_INTERVAL)
-        // {
-        //     sendRssiReport(MISSION_CONTROL_ID); // или другой ID
-        //     lastRssiSent = millis();
-        // }
+        static unsigned long lastRssiSent = 0;
+        if (millis() - lastRssiSent > RSSI_REPORT_INTERVAL)
+        {
+            sendRssiReport(MISSION_CONTROL_ID); // или другой ID
+            lastRssiSent = millis();
+        }
         // Показываем системное время раз в 5 секунд
         static unsigned long lastPrint = 0;
         if (millis() - lastPrint > BOAT_TMR_STSTEM_PRINT_TIME)
@@ -1025,6 +1029,16 @@ public:
         return 0;
     }
 
+    // Helper function to validate RSSI
+    float validateRSSI(float rssi, float fallbackRssi = -90.0f)
+    {
+        if (rssi < -130.0f || rssi > 0.0f) {
+            addLog("⚠️ Invalid RSSI value detected: " + String(rssi) + "dBm, using fallback");
+            return sensorCache.isValid() ? sensorCache.lastRSSI : fallbackRssi;
+        }
+        return rssi;
+    }
+
     void adaptiveLoraUpdate()
     {
         // Проверяем разрешение на адаптивное переключение
@@ -1060,10 +1074,7 @@ public:
             }
 
             // Validate RSSI values - reject obviously incorrect readings
-            if (rssi < -130.0f || rssi > 0.0f) {
-                addLog("⚠️ Invalid RSSI value detected: " + String(rssi) + "dBm, using fallback");
-                rssi = sensorCache.isValid() ? sensorCache.lastRSSI : -90.0f;
-            }
+            rssi = validateRSSI(rssi, sensorCache.isValid() ? sensorCache.lastRSSI : -90.0f);
 
             sensorCache.update(rssi, snr);
         }
@@ -1144,12 +1155,7 @@ public:
         }
 
         // 🔒 ЗАЩИТА от экстремальных значений RSSI
-        if (rssi < -130.0f || rssi > 0.0f) {
-            if (verbose) {
-                addLog("⚠️ Invalid RSSI " + String(rssi, 1) + "dBm, using cached value");
-            }
-            rssi = PongRssi; // Используем последний валидный RSSI
-        }
+        rssi = validateRSSI(rssi, PongRssi);
 
         int bestProfileByRssi = 0;      // Лучший профиль по RSSI
         int bestProfileByRssiSnr = 0;   // Лучший профиль по RSSI+SNR
@@ -1392,25 +1398,23 @@ public:
 
         JsonObject receiverObj = doc["receiver"].to<JsonObject>();
         flysky.toJson(receiverObj);
+        // Helper to add INA3221 array to JSON
+        auto addINA3221ToJson = [&](JsonArray& array, Adafruit_INA3221& sensor) {
+            for (uint8_t ch = 0; ch < 3; ch++)
+            {
+                JsonObject chObj = array.add<JsonObject>();
+                chObj["channel"] = ch + 1;
+                chObj["bus"] = sensor.getBusVoltage(ch);
+                chObj["shunt"] = sensor.getShuntVoltage(ch);
+                chObj["current"] = sensor.getCurrentAmps(ch);
+            }
+        };
+
         JsonArray inaArray = doc["ina3221"].to<JsonArray>();
-        for (uint8_t ch = 0; ch < 3; ch++)
-        {
-            JsonObject chObj = inaArray.add<JsonObject>();
-            chObj["channel"] = ch + 1;
-            chObj["bus"] = ina3221.getBusVoltage(ch);
-            chObj["shunt"] = ina3221.getShuntVoltage(ch);
-            chObj["current"] = ina3221.getCurrentAmps(ch);
-        }
+        addINA3221ToJson(inaArray, ina3221);
 
         JsonArray inaLowArray = doc["ina3221_low"].to<JsonArray>();
-        for (uint8_t ch = 0; ch < 3; ch++)
-        {
-            JsonObject chObj = inaLowArray.add<JsonObject>();
-            chObj["channel"] = ch + 1;
-            chObj["bus"] = ina3221_low.getBusVoltage(ch);
-            chObj["shunt"] = ina3221_low.getShuntVoltage(ch);
-            chObj["current"] = ina3221_low.getCurrentAmps(ch);
-        }
+        addINA3221ToJson(inaLowArray, ina3221_low);
 
         // Safety and performance monitoring
         JsonObject safetyObj = doc[F("safety")].to<JsonObject>();
@@ -1807,6 +1811,25 @@ public:
     }
 
 private:
+    // Helper function for INA3221 initialization
+    void initINA3221(Adafruit_INA3221& sensor, uint8_t address, const String& name, float lowerLimit, float upperLimit)
+    {
+        if (!sensor.begin(address, &Wire))
+        {
+            addLog("-" + name + " not found at address 0x" + String(address, HEX));
+        }
+        else
+        {
+            addLog("+" + name + " found at address 0x" + String(address, HEX));
+            sensor.setAveragingMode(INA3221_AVG_16_SAMPLES);
+            for (uint8_t i = 0; i < 3; i++)
+            {
+                sensor.setShuntResistance(i, 0.1);
+            }
+            sensor.setPowerValidLimits(lowerLimit, upperLimit);
+        }
+    }
+
     float smoothedRssi = -120.0f;  // начальное значение
     const float rssiAlpha = 0.15f; // коэффициент сглаживания (0.1–0.3)
 
@@ -1852,53 +1875,53 @@ private:
             return;
         }
         
-        currentBoatSettings.updateTimestamp();
+        bs.updateTimestamp();
         
         // GPS данные
         if (gnss.hasValidFix()) {
-            currentBoatSettings.gps.position.latitude = gnss.getLatitude();
-            currentBoatSettings.gps.position.longitude = gnss.getLongitude();
-            currentBoatSettings.gps.position.altitude = 0.0f; // TODO: добавить altitude в GNSS
-            currentBoatSettings.gps.position.timestamp = now;
-            currentBoatSettings.gps.satelliteCount = gnss.getSatelliteCount();
-            currentBoatSettings.gps.setFixQuality(GPSStatus::GPS_FIX); // Используем setter
-            currentBoatSettings.gps.hasFix = gnss.hasValidFix();
+            bs.gps.position.latitude = gnss.getLatitude();
+            bs.gps.position.longitude = gnss.getLongitude();
+            bs.gps.position.altitude = 0.0f; // TODO: добавить altitude в GNSS
+            bs.gps.position.timestamp = now;
+            bs.gps.satelliteCount = gnss.getSatelliteCount();
+            bs.gps.setFixQuality(GPSStatus::GPS_FIX); // Используем setter
+            bs.gps.hasFix = gnss.hasValidFix();
         }
         
         // Моторы - используем текущие значения или заглушки
-        currentBoatSettings.motors.leftPower = 0;  // TODO: добавить API в MotorEngineControl
-        currentBoatSettings.motors.rightPower = 0; // TODO: добавить API в MotorEngineControl
-        currentBoatSettings.motors.rudderAngle = rudder.getCurrentAngle();
-        currentBoatSettings.motors.emergencyStop = false; // TODO: реализовать emergency stop
+        bs.motors.leftPower = 0;  // TODO: добавить API в MotorEngineControl
+        bs.motors.rightPower = 0; // TODO: добавить API в MotorEngineControl
+        bs.motors.rudderAngle = rudder.getCurrentAngle();
+        bs.motors.emergencyStop = false; // TODO: реализовать emergency stop
         
         // LoRa статус
         if (loraComm) {
-            currentBoatSettings.lora.currentProfile = loraComm->getCurrentProfileIndex();
-            currentBoatSettings.lora.rssi = loraComm->getRadio().getRSSI();
-            currentBoatSettings.lora.snr = loraComm->getRadio().getSNR();
-            currentBoatSettings.lora.adaptiveMode = allowAdaptiveLoraSwitch;
-            currentBoatSettings.lora.missionControlConnected = missionCOntrolIsActivae;
-            currentBoatSettings.lora.lastPacketTime = lastPacketReceived;
+            bs.lora.currentProfile = loraComm->getCurrentProfileIndex();
+            bs.lora.rssi = loraComm->getRadio().getRSSI();
+            bs.lora.snr = loraComm->getRadio().getSNR();
+            bs.lora.adaptiveMode = allowAdaptiveLoraSwitch;
+            bs.lora.missionControlConnected = missionCOntrolIsActivae;
+            bs.lora.lastPacketTime = lastPacketReceived;
         }
         
         // Датчики и температуры
-        currentBoatSettings.sensors.motor1Temp = temps.get(MOTOR1);
-        currentBoatSettings.sensors.motor2Temp = temps.get(MOTOR2);
-        currentBoatSettings.sensors.radiatorTemp = temps.get(MOTOR_RAD);
-        currentBoatSettings.sensors.oilTemp = temps.get(OIL);
-        currentBoatSettings.sensors.ambientTemp = temps.get(ENV);
-        currentBoatSettings.sensors.batteryVoltage = battery.getVoltage();
-        currentBoatSettings.sensors.batteryCurrent = 0.0f; // TODO: реализовать ток батареи
-        currentBoatSettings.sensors.batteryPercent = (uint8_t)((battery.getVoltage() - 11.0f) / (12.6f - 11.0f) * 100.0f); // Примерная формула
+        bs.sensors.motor1Temp = temps.get(MOTOR1);
+        bs.sensors.motor2Temp = temps.get(MOTOR2);
+        bs.sensors.radiatorTemp = temps.get(MOTOR_RAD);
+        bs.sensors.oilTemp = temps.get(OIL);
+        bs.sensors.ambientTemp = temps.get(ENV);
+        bs.sensors.batteryVoltage = battery.getVoltage();
+        bs.sensors.batteryCurrent = 0.0f; // TODO: реализовать ток батареи
+        bs.sensors.batteryPercent = (uint8_t)((battery.getVoltage() - 11.0f) / (12.6f - 11.0f) * 100.0f); // Примерная формула
         
         // Навигация
-        currentBoatSettings.navigation.navigationActive = false; // TODO: проверить AutoNavigation API
-        currentBoatSettings.navigation.mode = NavigationStatus::MANUAL;
+        bs.navigation.navigationActive = false; // TODO: проверить AutoNavigation API
+        bs.navigation.mode = NavigationStatus::MANUAL;
         
         // Системная информация
-        currentBoatSettings.uptime = millis() / 1000;
-        currentBoatSettings.freeHeap = ESP.getFreeHeap();
-        currentBoatSettings.systemHealth = calculateSystemHealth();
+        bs.uptime = millis() / 1000;
+        bs.freeHeap = ESP.getFreeHeap();
+        bs.systemHealth = calculateSystemHealth();
         
         lastDataUpdate = now;
     }
@@ -1907,12 +1930,12 @@ private:
         uint8_t health = 100;
         
         // Снижаем здоровье системы при различных проблемах
-        if (currentBoatSettings.sensors.batteryVoltage < 11.0f) health -= 30;
-        if (currentBoatSettings.sensors.motor1Temp > 80.0f) health -= 20;
-        if (currentBoatSettings.sensors.motor2Temp > 80.0f) health -= 20;
-        if (!currentBoatSettings.gps.hasFix) health -= 15;
-        if (!currentBoatSettings.lora.missionControlConnected) health -= 10;
-        if (currentBoatSettings.freeHeap < 50000) health -= 15;
+        if (bs.sensors.batteryVoltage < 11.0f) health -= 30;
+        if (bs.sensors.motor1Temp > 80.0f) health -= 20;
+        if (bs.sensors.motor2Temp > 80.0f) health -= 20;
+        if (!bs.gps.hasFix) health -= 15;
+        if (!bs.lora.missionControlConnected) health -= 10;
+        if (bs.freeHeap < 50000) health -= 15;
         
         return max(0, (int)health);
     }
@@ -1929,9 +1952,9 @@ private:
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
-        if (StructuredDataManager::createHeartbeatPacket(currentBoatSettings, packetBase, payload, payloadSize)) {
+        if (StructuredDataManager::createHeartbeatPacket(bs, packetBase, payload, payloadSize)) {
             loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
-            addLog("📡 Structured Heartbeat sent: " + String(payloadSize) + " bytes, Health:" + String(currentBoatSettings.systemHealth) + "%");
+            addLog("📡 Structured Heartbeat sent: " + String(payloadSize) + " bytes, Health:" + String(bs.systemHealth) + "%");
             lastHeartbeatSent = millis(); // Обновляем время для статистики
         }
     }
@@ -1958,7 +1981,7 @@ private:
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
-        if (StructuredDataManager::createGPSPacket(currentBoatSettings.gps, packetBase, payload, payloadSize)) {
+        if (StructuredDataManager::createGPSPacket(bs.gps, packetBase, payload, payloadSize)) {
             loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
             addLog("� GPS data sent: " + String(payloadSize) + " bytes");
         }
@@ -1973,7 +1996,7 @@ private:
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
-        if (StructuredDataManager::createMotorPacket(currentBoatSettings.motors, packetBase, payload, payloadSize)) {
+        if (StructuredDataManager::createMotorPacket(bs.motors, packetBase, payload, payloadSize)) {
             loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
             addLog("⚙️ Motor data sent: " + String(payloadSize) + " bytes");
         }
@@ -1988,7 +2011,7 @@ private:
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
-        if (StructuredDataManager::createSensorPacket(currentBoatSettings.sensors, packetBase, payload, payloadSize)) {
+        if (StructuredDataManager::createSensorPacket(bs.sensors, packetBase, payload, payloadSize)) {
             loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
             addLog("🌡️ Sensor data sent: " + String(payloadSize) + " bytes");
         }
@@ -2003,7 +2026,7 @@ private:
         
         // Простая сериализация LoRa статуса
         uint8_t payload[LoRaStatus::serializedSize()];
-        currentBoatSettings.lora.serialize(payload);
+        bs.lora.serialize(payload);
         
         packetBase.payloadLen = LoRaStatus::serializedSize();
         loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
@@ -2019,7 +2042,7 @@ private:
         
         // Простая сериализация навигационных данных
         uint8_t payload[NavigationStatus::serializedSize()];
-        currentBoatSettings.navigation.serialize(payload);
+        bs.navigation.serialize(payload);
         
         packetBase.payloadLen = NavigationStatus::serializedSize();
         loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
@@ -2041,10 +2064,10 @@ private:
             bool firmwareUpdateMode;
         } sysInfo;
         
-        sysInfo.uptime = currentBoatSettings.uptime;
-        sysInfo.freeHeap = currentBoatSettings.freeHeap;
-        sysInfo.systemHealth = currentBoatSettings.systemHealth;
-        sysInfo.firmwareUpdateMode = currentBoatSettings.firmwareUpdateMode;
+        sysInfo.uptime = bs.uptime;
+        sysInfo.freeHeap = bs.freeHeap;
+        sysInfo.systemHealth = bs.systemHealth;
+        sysInfo.firmwareUpdateMode = bs.firmwareUpdateMode;
         
         // Используем простую сериализацию для системной информации
         uint8_t payload[sizeof(sysInfo)];
