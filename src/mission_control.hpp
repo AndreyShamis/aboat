@@ -979,6 +979,13 @@ private:
             // Ответим только на CMD_REQUEST_ASA
             if (hdr.packetType == CMD_REQUEST_ASA)
             {
+                // 🚀 NEW: Проверяем RSSI пульта - игнорируем при плохом сигнале
+                float currentRssi = loraComm->getRadio().getRSSI();
+                if (currentRssi < -120.0f) {
+                    addLog("2 [MC] 🚫 Ignoring CMD_REQUEST_ASA - RSSI too low: " + String(currentRssi, 1) + "dBm");
+                    break; // Игнорируем запрос при плохом RSSI
+                }
+                
                 vTaskDelay(pdMS_TO_TICKS(10)); 
                 sendAsaResponse(loraComm, nextPacketId++, profileIndex, sender);
                 addLog("3 [MC] ASA Response sent to LORA");
