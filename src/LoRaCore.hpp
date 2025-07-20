@@ -54,10 +54,7 @@ inline void packBaseIntoLoRa(LoRaPacket &out, uint8_t senderId, uint8_t receiver
     
     // Debug: Log the input values to track corruption
     char debugBuf[100];
-    snprintf(debugBuf, sizeof(debugBuf), "📦 packBase: type=%c, id=%u, payloadLen=%u", base.packetType, base.packetId, base.payloadLen);
-    Serial.println(debugBuf);
-    
-    
+
     if (base.payloadLen > MAX_LORA_PAYLOAD) { // Safety check: prevent memory corruption from invalid payload length
         out.payloadLen = 0; // Set to 0 to prevent further corruption
         snprintf(debugBuf, sizeof(debugBuf), "❌ packBase: Invalid payloadLen=%u > MAX=%u", base.payloadLen, MAX_LORA_PAYLOAD);
@@ -394,7 +391,7 @@ private:
     {
         while (true)
         {
-            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(100)) == pdTRUE)
+            if (logMutex && xSemaphoreTake(logMutex, pdMS_TO_TICKS(500)) == pdTRUE)
             {
                 if (!logBuffer.empty())
                 {
@@ -515,13 +512,11 @@ private:
 
     void sendTask()
     {
-        static char s[200]; // Keep static buffer for performance
-        
+        static char s[200];
         while (true)
         {
-            LoRaPacket pkt = {}; // Create fresh packet each time - no static!
-            // Уменьшаем таймаут ожидания для более быстрой обработки
-            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(25)) == pdTRUE)
+            LoRaPacket pkt = {};
+            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(15)) == pdTRUE)
             {
                 if (radioSemaphore)
                     xSemaphoreTake(radioSemaphore, portMAX_DELAY);
@@ -620,7 +615,7 @@ private:
                 }
                 xSemaphoreGive(pendingMutex);
             }
-            uint32_t randomDelay = 11 + (esp_random() % 37);
+            uint32_t randomDelay = 100 + (esp_random() % 100);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
@@ -723,7 +718,7 @@ public:
         // Create tasks
         BaseType_t res1 = xTaskCreatePinnedToCore(receiveTaskWrapper, "LoRaRecv", 6144, this, 3, &receiverTaskHandle, 1);
         BaseType_t res2 = xTaskCreatePinnedToCore(sendTaskWrapper, "LoRaSend", 6144, this, 2, nullptr, 1);
-        BaseType_t res3 = xTaskCreatePinnedToCore(resendTaskWrapper, "LoRaRetry", 4096, this, 1, nullptr, 1);
+        BaseType_t res3 = xTaskCreatePinnedToCore(resendTaskWrapper, "LoRaRetry", 4096, this, 1, nullptr, 0);
         BaseType_t res4 = xTaskCreatePinnedToCore(logTaskWrapper, "LoRaLog", 3072, this, 1, nullptr, 0);
 
         if (res1 != pdPASS || res2 != pdPASS || res3 != pdPASS || res4 != pdPASS)

@@ -172,29 +172,18 @@ public:
     }
     void sendHeartbeatPing()
     {
-        PacketCommand ping{};
-        ping.packetType = CMD_PING;
-        ping.packetId = nextPacketId++;
-        ping.payloadLen = 0;
-
-        loraComm->sendPacketBase(BOAT_DEVICE_ID, ping, nullptr, false);
-        addLog(F("[MC] 💓 Heartbeat PING sent to boat (expecting PONG)"));
-
-        // cформируем новый случайный интервал 10–15 с
+        sendPingToBoat();
         nextPingInterval = random(10000UL, 15001UL);
         lastPingHeartbeat = millis();
     }
     
-    // 🚀 NEW: Send ping to boat for active connection checking
     void sendPingToBoat()
     {
         PacketCommand ping{};
         ping.packetType = CMD_PING;
         ping.packetId = nextPacketId++;
         ping.payloadLen = 0;
-
         loraComm->sendPacketBase(BOAT_DEVICE_ID, ping, nullptr, false);
-        addLog("[MC] 🏓 Connection check PING sent to boat (expecting PONG)");
     }
 
     void addLog(const String &msg) override
@@ -847,15 +836,15 @@ private:
             if (idx == 0) {
                 responseBuffer.clear();
                 expectedResponseFragments = total;
-                addLog("[MC] 📦 Starting to receive " + String(total) + " command response fragments");
+                //addLog("[MC] 📦 Starting to receive " + String(total) + " command response fragments");
             }
             
             responseBuffer += chunk;
             
-            addLog("[MC] 📥 Fragment " + String(idx + 1) + "/" + String(total) + " received (" + String(chunk.length()) + " bytes)");
+            //addLog("[MC] 📥 Fragment " + String(idx + 1) + "/" + String(total) + " received (" + String(chunk.length()) + " bytes)");
 
             if (idx == expectedResponseFragments - 1) {
-                addLog("[MC] ✅ Complete command response received (" + String(responseBuffer.length()) + " bytes total)");
+                //addLog("[MC] ✅ Complete command response received (" + String(responseBuffer.length()) + " bytes total)");
                 processCompleteCommandResponse(responseBuffer);
                 responseBuffer.clear();
                 expectedResponseFragments = 0;
@@ -892,30 +881,30 @@ private:
                       const PacketBase &hdr,
                       const uint8_t *buf)
     {
-        // 🚀 FIX: Обновляем время активности лодки при получении ЛЮБОГО пакета от неё
+                float snr = loraComm->getRadio().getSNR();
+        float rssi = loraComm->getRadio().getRSSI();
         if (sender == BOAT_DEVICE_ID) {
-            lastBoatActivity = millis();
+            lastBoatActivity = millis();        // Обновляем время активности лодки при получении ЛЮБОГО пакета от неё
             boatIsActive = true;
             
-            // 🚀 FIX: Сбрасываем флаги пингов при любой активности лодки
-            if (firstPingSent || secondPingSent) {
+            
+            if (firstPingSent || secondPingSent) { //Сбрасываем флаги пингов при любой активности лодки
                 addLog("[MC] 🚤 Boat activity detected - resetting ping state");
                 firstPingSent = false;
                 secondPingSent = false;
                 waitingForPong = false;
             }
             
-            // Логируем каждый 10-й пакет от лодки для мониторинга активности
-            static uint8_t packetCounter = 0;
-            packetCounter++;
-            if (packetCounter % 10 == 0) {
-                addLog("[MC] 🚤 Boat activity: packet " + String(packetCounter) + 
-                       ", type=" + String((char)hdr.packetType) + ", id=" + String(hdr.packetId));
-            }
+            // // Логируем каждый 10-й пакет от лодки для мониторинга активности
+            // static uint8_t packetCounter = 0;
+            // packetCounter++;
+            // if (packetCounter % 10 == 0) {
+            //     addLog("[MC] 🚤 Boat activity: packet " + String(packetCounter) + 
+            //            ", type=" + String((char)hdr.packetType) + ", id=" + String(hdr.packetId));
+            // }
+            lastRSSI = rssi;
         }
-        
-        float snr = loraComm->getRadio().getSNR();
-        float rssi = loraComm->getRadio().getRSSI();
+    
         addLog("profile:" + String(currentProfileIndex) + " .RSSI:" + String(rssi) + "dBm, SNR=" + String(snr, 1) + "dB");
         switch (hdr.packetType)
         {
@@ -1011,41 +1000,31 @@ private:
             pong.payloadLen = 0;
             // loraComm->sendPacket(pong, sender);
             loraComm->sendPacketBase(sender, pong, nullptr, false);
-            addLog("[MC] 📥 Received PING from boat, sent PONG response");
+            addLog("[MC] Got PING, sent PONG response");
             break;
         }
         
         case CMD_PONG:
         {
-            // 🚀 NEW: Handle pong responses to our pings
             if (waitingForPong) {
                 unsigned long pingTime = millis() - lastPingSent;
                 String pingType = secondPingSent ? "second" : "first";
-                addLog("[MC] ✅ Boat responded to " + pingType + " PING with PONG in " + String(pingTime) + "ms - connection OK");
                 waitingForPong = false;
                 boatIsActive = true;
-                // 🚀 FIX: Сбрасываем время последней активности при получении понга
                 lastBoatActivity = millis();
-                // 🚀 FIX: Сбрасываем флаги пингов при успешном ответе
                 firstPingSent = false;
                 secondPingSent = false;
-            } else {
-                addLog("[MC] 📥 Received heartbeat PONG from boat (not in response to our PING)");
             }
             break;
         }
-        
         case CMD_RSSI_REPORT:
         {
-            addLog("Got CMD_RSSI_REPORT");
             PacketRssiReport rpt{};
             rpt.packetType = hdr.packetType;
             rpt.packetId = hdr.packetId;
             rpt.payloadLen = hdr.payloadLen;
-
             memcpy(reinterpret_cast<uint8_t *>(&rpt) + sizeof(PacketBase), buf, hdr.payloadLen);
-
-            addLog("📥RSSI:raw=" + String(rpt.rawRssi)+" ,smoothed=" + String(rpt.smoothedRssi));
+            addLog("---- Boat RSSI:raw=" + String(rpt.rawRssi)+" ,smoothed=" + String(rpt.smoothedRssi));
             break;
         }
         case CMD_COMMAND_RESPONSE:
@@ -1071,24 +1050,20 @@ private:
             addLog("[MC] ⚙️ Engine info: " + engineInfo);
             break;
         }
-
-        // 🚀 NEW: Structured data packet handling
-        case CMD_STRUCTURED_HEARTBEAT:
+        case CMD_STRUCTURED_HEARTBEAT:// 🚀 NEW: Structured data packet handling
         {
             UltraCompactHeartbeat hb;
             if (StructuredDataManager::parseHeartbeat(buf, hdr.payloadLen, hb)) {
-                // Обновляем последнее время получения от лодки
-                lastPacketReceived = millis();
+                lastPacketReceived = millis();      // Обновляем последнее время получения от лодки
                 boatIsActive = true;
                 
                 // Отображаем компактную информацию
-                addLog("[MC] 📡 Boat HB: " + String(hb.latitude, 6) + "," + String(hb.longitude, 6) + 
+                addLog("[MC][CMD_STRUCTURED_HEARTBEAT] Boat HB: " + String(hb.latitude, 6) + "," + String(hb.longitude, 6) + 
                        " P:" + String(hb.loraProfile) + 
                        " RSSI:" + String(hb.rssi) + 
                        " Bat:" + String(hb.batteryPercent) + "%");
                        
-                // Сохраняем состояние лодки (если нужно)
-                lastKnownBoatPosition.latitude = hb.latitude;
+                lastKnownBoatPosition.latitude = hb.latitude;   // Сохраняем состояние лодки (если нужно)
                 lastKnownBoatPosition.longitude = hb.longitude;
                 lastRSSI = hb.rssi;
                 lastBatteryPercent = hb.batteryPercent;
@@ -1103,7 +1078,7 @@ private:
         {
             GPSStatus gps;
             if (StructuredDataManager::parseGPS(buf, hdr.payloadLen, gps)) {
-                addLog("[MC] 📍 GPS: " + gps.toString());
+                addLog("[MC][CMD_STRUCTURED_GPS] GPS: " + gps.toString());
             } else {
                 addLog("[MC] ❌ Failed to parse GPS data");
             }
@@ -1128,8 +1103,7 @@ private:
 
         if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && hdr.packetType != CMD_REQUEST_ASA && hdr.packetType != CMD_RSSI_REPORT)
         {
-            // Используем новую систему bulk ACK вместо мгновенной отправки
-            addToBulkAck(hdr.packetId);
+            addToBulkAck(hdr.packetId);// Используем новую систему bulk ACK вместо мгновенной отправки
         }
     }
     // MissionControl.hpp
@@ -1156,7 +1130,7 @@ private:
     void addToBulkAck(PacketId_t packetId)
     {
         if (pendingBulkAck.addAck(packetId)) {
-            addLog("[MC] 📦 Added ACK for packet " + String(packetId) + " to bulk (" + String(pendingBulkAck.count) + "/10)");
+            //addLog("[MC] 📦 Added ACK for packet " + String(packetId) + " to bulk (" + String(pendingBulkAck.count) + "/10)");
             
             // Если пакет заполнен или прошло достаточно времени - отправляем
             if (pendingBulkAck.isFull() || 
@@ -1166,9 +1140,9 @@ private:
         } else {
             // Пакет переполнен - отправляем текущий и начинаем новый
             sendBulkAck();
-            if (pendingBulkAck.addAck(packetId)) {
-                addLog("[MC] 📦 Started new bulk ACK with packet " + String(packetId));
-            }
+            // if (pendingBulkAck.addAck(packetId)) {
+            //     addLog("[MC] 📦 Started new bulk ACK with packet " + String(packetId));
+            // }
         }
     }
     
@@ -1177,15 +1151,13 @@ private:
     {
         if (pendingBulkAck.isEmpty()) return;
         
-        // Диагностика перед отправкой
-        if (pendingBulkAck.hasDuplicates()) {
-            addLog("[MC] ⚠️ WARNING: BULK ACK contains duplicates: " + pendingBulkAck.getDebugInfo());
-        }
+        // // Диагностика перед отправкой
+        // if (pendingBulkAck.hasDuplicates()) {
+        //     addLog("[MC] ⚠️ WARNING: BULK ACK contains duplicates: " + pendingBulkAck.getDebugInfo());
+        // }
         
         pendingBulkAck.packetId = nextPacketId++;
-        
-        // Формируем payload: count + массив ID
-        uint8_t payload[1 + 10 * sizeof(PacketId_t)];
+        uint8_t payload[1 + 10 * sizeof(PacketId_t)];   // Формируем payload: count + массив ID
         payload[0] = pendingBulkAck.count;
         memcpy(&payload[1], pendingBulkAck.ackedIds, pendingBulkAck.count * sizeof(PacketId_t));
         
@@ -1200,16 +1172,15 @@ private:
         } else {
             // Если высокоприоритетная отправка не удалась, используем обычную
             loraComm->sendPacketBase(BOAT_DEVICE_ID, pendingBulkAck, payload, false);
-            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (standard): " + pendingBulkAck.getDebugInfo());
+            //addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (standard): " + pendingBulkAck.getDebugInfo());
         }
         
         pendingBulkAck.clear();
         lastBulkAckTime = millis();
     }
     
-    // Проверить, нужно ли отправить bulk ACK по таймауту
-    void checkBulkAckTimeout()
-    {
+    void checkBulkAckTimeout()  
+    {   // Проверить, нужно ли отправить bulk ACK по таймауту
         if (!pendingBulkAck.isEmpty() && 
             (millis() - lastBulkAckTime > BULK_ACK_INTERVAL_MS)) {
             sendBulkAck();
