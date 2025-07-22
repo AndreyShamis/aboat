@@ -170,6 +170,11 @@ public:
 
         // 👇 Передаём стабильный буфер
         loraComm->sendPacketBase(BOAT_DEVICE_ID, cmd, tempBuf);
+        
+        // 🚀 FIX: Увеличиваем счётчик отправленных пакетов
+        if (hasValidBoatStatus) {
+            lastBoatStatus.lora.packetsSent++;
+        }
     }
     void sendHeartbeatPing()
     {
@@ -475,19 +480,22 @@ public:
         Serial.println("║   W:C               - Clear waypoints                          ║");
         Serial.println("║   W:status          - Web interface status                     ║");
         Serial.println("║                                                                  ║");
-        Serial.println("║ 📦 Structured Data Commands (BS:/DM:) - NEW BoatSettings API  ║");
+        Serial.println("║ 📦 Structured Data Commands (BS:/DM:) - BoatSettings API      ║");
         Serial.println("║   BS:H / DM:H  - Request structured heartbeat (basic status)   ║");
         Serial.println("║   BS:F / DM:F  - Request full structured status                ║");
-        Serial.println("║   BS:G / DM:G  - Request GPS data only                         ║");
-        Serial.println("║   BS:M / DM:M  - Request motor status only                     ║");
-        Serial.println("║   BS:S / DM:S  - Request sensor data only (temp, battery)      ║");
-        Serial.println("║   BS:L / DM:L  - Request LoRa status only                      ║");
-        Serial.println("║   BS:N / DM:N  - Request navigation status only                ║");
-        Serial.println("║   BS:SYS/DM:SYS- Request system info (uptime, memory, health)  ║");
+        Serial.println("║   DM:G / DM:1  - Request GPS data only                         ║");
+        Serial.println("║   DM:M / DM:2  - Request motor status only                     ║");
+        Serial.println("║   DM:SENS/DM:3 - Request sensor data only (temp, battery)      ║");
+        Serial.println("║   DM:L / DM:5  - Request LoRa status only                      ║");
+        Serial.println("║   DM:N / DM:4  - Request navigation status only                ║");
+        Serial.println("║   DM:SYS/DM:6  - Request system info (uptime, memory, health)  ║");
         Serial.println("║   BS:ON/DM:ON  - Enable structured data mode                   ║");
         Serial.println("║   BS:OFF/DM:OFF- Disable structured data mode (use JSON)       ║");
         Serial.println("║   BS:PING      - Send manual ping to boat                      ║");
         Serial.println("║   BS:RSSI      - Request RSSI report from boat                 ║");
+        Serial.println("║                                                                  ║");
+        Serial.println("║ 💡 Note: Uses legacy letter commands (G,M,SENS,L,N,SYS) for   ║");
+        Serial.println("║          compatibility with current boat firmware              ║");
         Serial.println("║                                                                  ║");
         Serial.println("║ ⚙️ Legacy Commands:                                            ║");
         Serial.println("║   M:120     - Set motor power                                   ║");
@@ -619,33 +627,33 @@ public:
                 sendCommandString("DM:F");
                 addLog("[MC] 📦 Requested full structured status");
             }
-            else if (param == "G") {
-                // Request GPS data only
+            else if (param == "G" || param == "1") {
+                // Request GPS data only (G for legacy, 1 for new format)
                 sendCommandString("DM:G");
                 addLog("[MC] 📦 Requested GPS data");
             }
-            else if (param == "M") {
-                // Request motor status only
+            else if (param == "M" || param == "2") {
+                // Request motor status only (M for legacy, 2 for new format)
                 sendCommandString("DM:M");
                 addLog("[MC] 📦 Requested motor status");
             }
-            else if (param == "S") {
-                // Request sensor data only
+            else if (param == "S" || param == "3") {
+                // Request sensor data only (S for legacy, 3 for new format)
                 sendCommandString("DM:SENS");
                 addLog("[MC] 📦 Requested sensor data");
             }
-            else if (param == "L") {
-                // Request LoRa status only
+            else if (param == "L" || param == "5") {
+                // Request LoRa status only (L for legacy, 5 for new format)
                 sendCommandString("DM:L");
                 addLog("[MC] 📦 Requested LoRa status");
             }
-            else if (param == "N") {
-                // Request navigation status only
+            else if (param == "N" || param == "4") {
+                // Request navigation status only (N for legacy, 4 for new format)
                 sendCommandString("DM:N");
                 addLog("[MC] 📦 Requested navigation status");
             }
-            else if (param == "SYS") {
-                // Request system info
+            else if (param == "SYS" || param == "6") {
+                // Request system info (SYS for legacy, 6 for new format)
                 sendCommandString("DM:SYS");
                 addLog("[MC] 📦 Requested system info");
             }
@@ -670,7 +678,7 @@ public:
                 addLog("[MC] 📶 Requested RSSI report");
             }
             else {
-                addLog("[MC] ❌ Unknown structured data command: " + param + ". Available: H,F,G,M,S,L,N,SYS,ON,OFF,PING,RSSI");
+                addLog("[MC] ❌ Unknown structured data command: " + param + ". Available: H,F,G/1,M/2,SENS/3,L/5,N/4,SYS/6,ON,OFF,PING,RSSI");
             }
         }
         else if (cmd == "help" || cmd == "HELP" || cmd == "h" || cmd == "H") {
@@ -685,9 +693,13 @@ public:
         else if (cmd == "boatstatus" || cmd == "BOATSTATUS" || cmd == "bs") {
             printBoatStatus();
         }
-        else if (cmd == "requestboat" || cmd == "REQUESTBOAT") {
+        else if (cmd == "requestboat" || cmd == "rb") {
             // Request full boat status
             sendCommandString("DM:F");
+            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
+            sendCommandString("DM:SYS");
+            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
+            sendCommandString("DM:G");
             addLog("[MC] 📦 Requested full boat status - wait a moment then use 'boatstatus'");
         }
         else if (cmd == "ping" || cmd == "PING") {
@@ -983,13 +995,14 @@ private:
                 waitingForPong = false;
             }
             
-            // // Логируем каждый 10-й пакет от лодки для мониторинга активности
-            // static uint8_t packetCounter = 0;
-            // packetCounter++;
-            // if (packetCounter % 10 == 0) {
-            //     addLog("[MC] 🚤 Boat activity: packet " + String(packetCounter) + 
-            //            ", type=" + String((char)hdr.packetType) + ", id=" + String(hdr.packetId));
-            // }
+            // 🚀 FIX: Обновляем только счетчик пакетов при получении от лодки
+            if (hasValidBoatStatus) {
+                lastBoatStatus.lora.packetsReceived++;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+            }
+            
+            // Сохраняем RSSI для legacy использования
             lastRSSI = rssi;
         }
     
@@ -1186,6 +1199,9 @@ private:
                 lastBoatStatus.updateTimestamp();
                 lastBoatStatusUpdate = millis();
                 hasValidBoatStatus = true;
+                
+                // 🚀 FIX: Обновляем кэшированную позицию
+                lastKnownBoatPosition = gps.position;
             } else {
                 addLog("[MC] ❌ Failed to parse GPS data");
             }
@@ -1218,6 +1234,9 @@ private:
                 lastBoatStatus.updateTimestamp();
                 lastBoatStatusUpdate = millis();
                 hasValidBoatStatus = true;
+                
+                // 🚀 FIX: Обновляем кэшированные значения
+                lastBatteryPercent = sensors.batteryPercent;
             } else {
                 addLog("[MC] ❌ Failed to parse sensor data");
             }
@@ -1238,6 +1257,40 @@ private:
                 hasValidBoatStatus = true;
             } else {
                 addLog("[MC] ❌ Failed to parse navigation data");
+            }
+            break;
+        }
+        case CMD_STRUCTURED_LORA:
+        {
+            addLog("[MC][CMD_STRUCTURED_LORA] LoRa data received (" + String(hdr.payloadLen) + " bytes)");
+            LoRaStatus lora;
+            if (StructuredDataManager::parseLoRa(buf, hdr.payloadLen, lora)) {
+                addLog("[MC] 📡 LoRa: Profile=" + String(lora.currentProfile) + 
+                       ", RSSI=" + String(lora.rssi, 1) + "dBm, SNR=" + String(lora.snr, 1) + "dB");
+                lastBoatStatus.lora = lora;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+                hasValidBoatStatus = true;
+            } else {
+                addLog("[MC] ❌ Failed to parse LoRa data");
+            }
+            break;
+        }
+        case CMD_STRUCTURED_SYSTEM:
+        {
+            addLog("[MC][CMD_STRUCTURED_SYSTEM] System data received (" + String(hdr.payloadLen) + " bytes)");
+            SystemInfo system;
+            if (StructuredDataManager::parseSystem(buf, hdr.payloadLen, system)) {
+                addLog("[MC] 🖥️ System: Uptime=" + String(system.uptime) + "s" + 
+                       ", Free=" + String(system.freeHeap) + " bytes");
+                lastBoatStatus.uptime = system.uptime;
+                lastBoatStatus.freeHeap = system.freeHeap;
+                lastBoatStatus.firmwareUpdateMode = system.firmwareUpdateMode;
+                lastBoatStatus.updateTimestamp();
+                lastBoatStatusUpdate = millis();
+                hasValidBoatStatus = true;
+            } else {
+                addLog("[MC] ❌ Failed to parse system data");
             }
             break;
         }
@@ -1294,6 +1347,7 @@ private:
         } else {
             // Пакет переполнен - отправляем текущий и начинаем новый
             sendBulkAck();
+            pendingBulkAck.addAck(packetId);
             // if (pendingBulkAck.addAck(packetId)) {
             //     addLog("[MC] 📦 Started new bulk ACK with packet " + String(packetId));
             // }

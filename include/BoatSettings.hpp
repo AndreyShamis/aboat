@@ -209,6 +209,41 @@ struct NavigationStatus {
     }
 };
 
+// Системная информация
+struct SystemInfo {
+    uint32_t uptime = 0;           // Время работы системы (секунды)
+    uint32_t freeHeap = 0;         // Свободная память (байты)
+    uint8_t systemHealth = 100;    // Общее состояние системы (0-100%)
+    bool firmwareUpdateMode = false; // Режим обновления прошивки
+    
+    void serialize(uint8_t* buffer) const {
+        size_t offset = 0;
+        memcpy(buffer + offset, &uptime, sizeof(uptime)); offset += sizeof(uptime);
+        memcpy(buffer + offset, &freeHeap, sizeof(freeHeap)); offset += sizeof(freeHeap);
+        buffer[offset++] = systemHealth;
+        buffer[offset++] = firmwareUpdateMode ? 1 : 0;
+    }
+    
+    void deserialize(const uint8_t* buffer) {
+        size_t offset = 0;
+        memcpy(&uptime, buffer + offset, sizeof(uptime)); offset += sizeof(uptime);
+        memcpy(&freeHeap, buffer + offset, sizeof(freeHeap)); offset += sizeof(freeHeap);
+        systemHealth = buffer[offset++];
+        firmwareUpdateMode = buffer[offset++] != 0;
+    }
+    
+    static constexpr size_t serializedSize() {
+        return sizeof(uptime) + sizeof(freeHeap) + 1 + 1;
+    }
+    
+    String toString() const {
+        return "System: Uptime:" + String(uptime) + "s" +
+               ", Free:" + String(freeHeap) + " bytes" +
+               ", Health:" + String(systemHealth) + "%" +
+               ", Update:" + String(firmwareUpdateMode ? "ON" : "OFF");
+    }
+};
+
 // Основная структура состояния лодки
 struct BoatSettings {
     uint32_t timestamp = 0;         // Время последнего обновления

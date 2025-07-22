@@ -8,10 +8,12 @@
 // 🚀 Новые CommandType для структурированных данных (добавляем к существующим)
 // Используем существующую систему CommandType из settings.h
 constexpr CommandType CMD_STRUCTURED_HEARTBEAT = (CommandType)'H';  // Структурированный heartbeat
-constexpr CommandType CMD_STRUCTURED_GPS = (CommandType)'P';        // GPS данные (Position)
-constexpr CommandType CMD_STRUCTURED_MOTORS = (CommandType)'M';     // Моторы и управление
-constexpr CommandType CMD_STRUCTURED_SENSORS = (CommandType)'E';    // Датчики (sEnsors)
-constexpr CommandType CMD_STRUCTURED_NAVIGATION = (CommandType)'N'; // Навигация (используем существующий)
+constexpr CommandType CMD_STRUCTURED_GPS = (CommandType)'1';        // GPS данные (использую '1' как было)
+constexpr CommandType CMD_STRUCTURED_MOTORS = (CommandType)'2';     // Моторы и управление  
+constexpr CommandType CMD_STRUCTURED_SENSORS = (CommandType)'3';    // Датчики (sEnsors)
+constexpr CommandType CMD_STRUCTURED_NAVIGATION = (CommandType)'4'; // Навигация 
+constexpr CommandType CMD_STRUCTURED_LORA = (CommandType)'5';       // LoRa статус
+constexpr CommandType CMD_STRUCTURED_SYSTEM = (CommandType)'Z';     // Системная информация (Z unused)
 constexpr CommandType CMD_STRUCTURED_FRAGMENT = (CommandType)'X';   // Фрагмент больших данных
 
 // Заголовок для фрагментированной передачи структурированных данных
@@ -269,6 +271,26 @@ public:
         return true;
     }
     
+    // 🚀 NEW: Разбор данных LoRa
+    static bool parseLoRa(const uint8_t* payload, size_t payloadSize, LoRaStatus& lora) {
+        if (payloadSize != LoRaStatus::serializedSize()) {
+            return false;
+        }
+        
+        lora.deserialize(payload);
+        return true;
+    }
+    
+    // 🚀 NEW: Разбор системных данных
+    static bool parseSystem(const uint8_t* payload, size_t payloadSize, SystemInfo& system) {
+        if (payloadSize != SystemInfo::serializedSize()) {
+            return false;
+        }
+        
+        system.deserialize(payload);
+        return true;
+    }
+    
     // Разбор фрагментированного пакета
     static bool parseFragment(const uint8_t* payload, size_t payloadSize, 
                               StructuredFragmentHeader& header, const uint8_t*& fragmentData, size_t& fragmentSize) {
@@ -290,6 +312,8 @@ public:
                type == CMD_STRUCTURED_MOTORS ||
                type == CMD_STRUCTURED_SENSORS ||
                type == CMD_STRUCTURED_NAVIGATION ||
+               type == CMD_STRUCTURED_LORA ||
+               type == CMD_STRUCTURED_SYSTEM ||
                type == CMD_STRUCTURED_FRAGMENT;
     }
     
@@ -299,6 +323,8 @@ public:
                ", GPS:" + String(GPSStatus::serializedSize()) + "b" +
                ", Motor:" + String(MotorStatus::serializedSize()) + "b" + 
                ", Sensor:" + String(SensorStatus::serializedSize()) + "b" +
+               ", LoRa:" + String(LoRaStatus::serializedSize()) + "b" +
+               ", System:" + String(SystemInfo::serializedSize()) + "b" +
                ", MaxData:" + String(MAX_STRUCTURED_DATA_SIZE) + "b";
     }
 };
