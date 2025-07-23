@@ -1,6 +1,8 @@
 #pragma once
 #include <Arduino.h>
 #include <time.h>
+#include "temp_sensors.hpp"
+#include "battery_monitor.hpp"
 
 
 // Cache для оптимизации частых операций

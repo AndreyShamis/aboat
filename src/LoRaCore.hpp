@@ -1097,7 +1097,8 @@ public:
 
 };
 
-inline TaskHandle_t LoRaCore::receiverTaskHandle = nullptr;
+// Static member declaration (без inline для C++14)
+// static TaskHandle_t LoRaCore::receiverTaskHandle;
 
 // ENHANCED PROFILE APPLICATION
 inline bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
