@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include "Fusion.h"
 #include <ESP32Servo.h>
 #include "settings.h"
 #include "Boat.hpp"
@@ -8,10 +7,8 @@
 #include <SPIFFS.h>
 #include <time.h>
 
-unsigned long lastIMUUpdate = 0;
-const unsigned long imuInterval = 10; // 100Hz обновление фильтра
 unsigned long lastPrint = 0;
-const unsigned long printInterval = 15000; // Печатаем каждые 5 секунд
+const unsigned long printInterval = 15000; // Печатаем каждые 15 секунд
 
 Boat boat;
 
@@ -87,50 +84,17 @@ void loop()
   }
   boat.keep();
 
-  // Для дебага:
-  static unsigned long lastStatusTime = 0;
-  static unsigned long lastHeadingTime = 0;
-
-  if (millis() - lastIMUUpdate >= imuInterval)
-  {
-    lastIMUUpdate = millis();
-    // Delta time
-    static unsigned long lastFusionTime = 0;
-    unsigned long now = millis();
-    float deltaTimeSeconds = (now - lastFusionTime) / 1000.0f;
-    lastFusionTime = now;
-
-    boat.mpu.accelUpdate();
-    boat.mpu.gyroUpdate();
-    boat.mpu.magUpdate();
-
-    float ax = boat.mpu.accelX();
-    float ay = boat.mpu.accelY();
-    float az = boat.mpu.accelZ();
-    float gx = boat.mpu.gyroX() * DEG_TO_RAD;
-    float gy = boat.mpu.gyroY() * DEG_TO_RAD;
-    float gz = boat.mpu.gyroZ() * DEG_TO_RAD;
-    float mx = boat.mpu.magX();
-    float my = boat.mpu.magY();
-    float mz = boat.mpu.magZ();
-
-    FusionVector gyro = {gx, gy, gz};
-    FusionVector accel = {ax, ay, az};
-    FusionVector mag = {mx, my, mz};
-
-    FusionAhrsUpdate(&boat.ahrs, gyro, accel, mag, deltaTimeSeconds);
-  }
-
+  // Периодический вывод статуса для отладки
   if (millis() - lastPrint >= printInterval)
   {
-
     lastPrint = millis();
-    FusionQuaternion quat = FusionAhrsGetQuaternion(&boat.ahrs);
-    FusionEuler euler = FusionQuaternionToEuler(quat);
-    // char buf[128];
-    // snprintf(buf, sizeof(buf), "🔄 Roll: %.2f°, Pitch: %.2f°, Yaw: %.2f°",
-    //          euler.angle.roll, euler.angle.pitch, euler.angle.yaw);
-    // boat.addLog(buf);
+    
+    // Получаем ориентацию из IMU модуля для отладки
+    const IMUModule::Orientation& orientation = boat.imu.getOrientation();
+    
+    // Можно раскомментировать для детального логирования:
+    // boat.addLog("🔄 Roll: " + String(orientation.roll, 1) + "° Pitch: " + 
+    //             String(orientation.pitch, 1) + "° Yaw: " + String(orientation.yaw, 1) + "°");
 
     boat.printStatus();
   }

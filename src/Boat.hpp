@@ -4,7 +4,6 @@
 #include <vector>
 #include <algorithm>
 #include <ArduinoJson.h>
-#include <MPU9250_asukiaaa.h>
 #include <WiFi.h>
 // #include <TinyGPSPlus.h>
 #include "settings.h"
@@ -28,6 +27,7 @@
 #include "PacketAsaExchange.hpp"
 #include "boat_utils.hpp"
 #include "auto_navigation.hpp"
+#include "IMUModule.hpp"
 #include "stack_monitor.hpp"
 #include "GPSPoint.hpp"
 #include "BoatSettings.hpp"
@@ -63,8 +63,7 @@ static unsigned long lastControlUpdate = 0;
 class Boat : LogInterface
 {
 public:
-    MPU9250_asukiaaa mpu;
-    FusionAhrs ahrs;
+    IMUModule imu;
     BatteryMonitor battery;
     VoltageCurrentSensor sensor;
     Adafruit_INA3221 ina3221;
@@ -138,7 +137,7 @@ public:
         addLog("Heartbeat packet received");
     }
 
-    Boat() : sensor(0x48), gnss(Serial2)
+    Boat() : imu(this), sensor(0x48), gnss(Serial2)
     {
         loraComm = new LoRaCore(BOAT_DEVICE_ID, this);
         // Создаем мьютекс для потокобезопасного логирования
@@ -246,13 +245,16 @@ public:
             }
         }
 
-        mpu.setWire(&Wire);
-        mpu.beginAccel();
-        mpu.beginGyro();
-        mpu.beginMag();
-        FusionAhrsInitialise(&ahrs);
-
-        addLog("MPU9250 + Madgwick initialized");
+        // Инициализация IMU модуля (MPU9250 + Fusion фильтр)
+        // Устанавливаем logger интерфейс после того как Boat полностью инициализирован
+        imu.setLogger(this);
+        if (!imu.begin(&Wire, I2C_SDA, I2C_SCL)) {
+            addLog("❌ IMU initialization failed!");
+        } else {
+            addLog("✅ IMU Module (MPU9250 + Fusion AHRS) initialized successfully");
+            // Запускаем калибровку гироскопа при старте
+            imu.startGyroCalibration(1000);
+        }
 
         // Инициализация INA3221 датчиков
         initINA3221(ina3221, 0x41, "INA3221", 4.0f, 18.0f);
@@ -341,7 +343,12 @@ public:
                                    sendRssiReport(MISSION_CONTROL_ID);
                                    addLog("📶 RSSI report sent on request"); });
 
-        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control), N (navigation), W (waypoints), T (time), DM (data mode - structured data commands), RSSI (signal report)");
+        // 🧭 IMU commands with simplified registration
+        registerCommandWithResponse("I", [this](const String &arg) {
+            return handleIMUCommand(arg);
+        });
+
+        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control), N (navigation), W (waypoints), T (time), DM (data mode - structured data commands), RSSI (signal report), I (IMU - orientation, calibration, diagnostics)");
 
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
@@ -405,8 +412,6 @@ public:
             addLog("🕒 GPS time not yet available, will sync when ready");
         }
     }
-
-    unsigned long lastSync = 0;
 
     // Helper for structured data commands
     String handleStructuredDataCommand(const String& command)
@@ -689,6 +694,57 @@ public:
             } else {
                 response += subResponse;
             }
+        }
+        return response;
+    }
+
+    // Helper function for IMU commands
+    String handleIMUCommand(const String& arg)
+    {
+        String response = "I:";
+        if (arg == "S" || arg == "status" || arg.isEmpty()) {
+            response += imu.getOrientationString();
+            addLog("[IMU] " + imu.getOrientationString());
+        } else if (arg == "C" || arg == "calibrate") {
+            if (imu.isCalibrating()) {
+                response += "calibration already in progress";
+            } else {
+                imu.startGyroCalibration(1000);
+                response += "gyro calibration started (1000 samples)";
+                addLog("[IMU] 🔧 Gyro calibration started by command");
+            }
+        } else if (arg == "R" || arg == "reset") {
+            imu.reset();
+            response += "AHRS filter reset";
+            addLog("[IMU] 🔄 AHRS filter reset by command");
+        } else if (arg == "D" || arg == "diag") {
+            String diagInfo = imu.getDiagnosticInfo();
+            addLog("[IMU] " + diagInfo);
+            response += diagInfo.substring(6); // Remove "[IMU] " prefix
+        } else if (arg == "F" || arg == "force") {
+            if (imu.forceUpdate()) {
+                response += "forced update completed: " + imu.getOrientationString();
+            } else {
+                response += "forced update failed";
+            }
+        } else if (arg.startsWith("freq:") || arg.startsWith("F:")) {
+            String freqStr = arg.startsWith("freq:") ? arg.substring(5) : arg.substring(2);
+            int frequency = freqStr.toInt();
+            if (frequency >= 10 && frequency <= 200) {
+                unsigned long interval = 1000 / frequency;
+                imu.setUpdateInterval(interval);
+                response += "update frequency set to " + String(frequency) + "Hz";
+                addLog("[IMU] Update frequency changed to " + String(frequency) + "Hz");
+            } else {
+                response += "invalid frequency (valid range: 10-200 Hz)";
+            }
+        } else if (arg == "raw") {
+            const IMUModule::RawData& raw = imu.getRawData();
+            response += "Accel[" + String(raw.accelX, 2) + "," + String(raw.accelY, 2) + "," + String(raw.accelZ, 2) + "]";
+            response += " Gyro[" + String(raw.gyroX, 1) + "," + String(raw.gyroY, 1) + "," + String(raw.gyroZ, 1) + "]";
+            response += " Mag[" + String(raw.magX, 1) + "," + String(raw.magY, 1) + "," + String(raw.magZ, 1) + "]";
+        } else {
+            response += "Usage: I:[S|C|R|D|F|freq:N|raw] (Status/Calibrate/Reset/Diagnostic/Force_update/Frequency/Raw_data)";
         }
         return response;
     }
@@ -1365,13 +1421,16 @@ public:
         temp[F("oil")] = temps.get(OIL);
         temp[F("ambient")] = temps.get(ENV);
 
-        FusionQuaternion quat = FusionAhrsGetQuaternion(&ahrs);
-        FusionEuler euler = FusionQuaternionToEuler(quat);
+        // Получаем данные ориентации из IMU модуля
+        const IMUModule::Orientation& orientation = imu.getOrientation();
 
-        JsonObject imu = doc[F("imu")].to<JsonObject>();
-        imu[F("roll")] = euler.angle.roll;
-        imu[F("pitch")] = euler.angle.pitch;
-        imu[F("yaw")] = euler.angle.yaw;
+        JsonObject imuObj = doc[F("imu")].to<JsonObject>();
+        imuObj[F("roll")] = orientation.roll;
+        imuObj[F("pitch")] = orientation.pitch;
+        imuObj[F("yaw")] = orientation.yaw;
+        
+        // Добавляем подробную информацию об IMU
+        imu.toJSON(imuObj);
 
         JsonObject pumpObj = doc[F("oil_pump")].to<JsonObject>();
         oilPump.toJSON(pumpObj);
@@ -2099,8 +2158,16 @@ private:
         static unsigned long lastSensorUpdate = 0;
         static unsigned long lastGnssUpdate = 0;
         static unsigned long lastCacheUpdate = 0;
+        static unsigned long lastIMUUpdate = 0;
 
         unsigned long now = millis();
+
+        // IMU - каждые 10ms (100Hz) для точной ориентации
+        if (now - lastIMUUpdate >= 10)
+        {
+            imu.update();
+            lastIMUUpdate = now;
+        }
 
         // Battery and basic sensors - каждые 50ms (20Hz)
         if (now - lastSensorUpdate >= 50)
