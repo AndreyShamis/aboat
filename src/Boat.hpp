@@ -42,6 +42,7 @@ static constexpr unsigned long PING_INTERVAL = 40013;
 static constexpr unsigned long ASA_TIMEOUT = 15007;
 static constexpr unsigned long ACTIVITY_TIMEOUT = 42777;
 static constexpr unsigned long ADAPTIVE_SWITCH_INTERVAL = 8000; // 🚀 Reduced from 25s to 8s for faster adaptation
+static constexpr unsigned long MANUAL_PROFILE_BLOCK_TIME = 30000; // 30 seconds block for adaptive switching after manual profile change
 
 static unsigned long lastChannelPrint = 0;
 static unsigned long lastControlUpdate = 0;
@@ -119,6 +120,14 @@ public:
             String status = "Profile:" + String(loraComm->getCurrentProfileIndex()) + 
                    ",RSSI:" + String(smoothedRssi) + "dBm" +
                    ",Adaptive:" + String(allowAdaptiveLoraSwitch ? "ON" : "OFF");
+            
+            // Add manual block status if active
+            unsigned long timeSinceManual = millis() - lastManualProfileChange;
+            if (timeSinceManual < MANUAL_PROFILE_BLOCK_TIME) {
+                unsigned long remainingBlockTime = (MANUAL_PROFILE_BLOCK_TIME - timeSinceManual) / 1000;
+                status += ",ManualBlock:" + String(remainingBlockTime) + "s";
+            }
+            
             addLog("[LORA] " + status);
             response += status;
         } else if (arg.startsWith("P") || arg.startsWith("profile:")) {
@@ -130,11 +139,14 @@ public:
             response += "Adaptive LoRa triggered";
         } else if (arg.startsWith("A:")) {
             response += handleAdaptiveControl(arg.substring(2));
+        } else if (arg == "unblock" || arg == "U") {
+            lastManualProfileChange = 0; // Reset manual block timer
+            response += "Manual profile block reset, adaptive switching re-enabled";
         } else if (arg.length() > 0 && arg[0] >= '0' && arg[0] <= '9') {
             int profileIndex = arg.toInt();
             response += applyLoRaProfile(profileIndex);
         } else {
-            response += "Current profile:" + String(loraComm->getCurrentProfileIndex()) + 
+            response += "Usage: L:[S|P<n>|<n>|adapt|A:0/1|U] - Current: Profile:" + String(loraComm->getCurrentProfileIndex()) + 
                        ",RSSI:" + String(smoothedRssi) + "dBm";
         }
         return response;
@@ -144,7 +156,8 @@ public:
     {
         if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
             applyProfile(profileIndex);
-            addLog("[LORA] Manually switched to profile " + String(profileIndex));
+            lastManualProfileChange = millis(); // Block adaptive switching for some time
+            addLog("[LORA] Manually switched to profile " + String(profileIndex) + " - adaptive switching blocked for " + String(MANUAL_PROFILE_BLOCK_TIME/1000) + "s");
             return "Profile changed to " + String(profileIndex);
         } else {
             return "Invalid profile index:" + String(profileIndex);
@@ -275,7 +288,7 @@ public:
             return handleIMUCommand(arg);
         });
 
-        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control), N (navigation), W (waypoints), T (time), DM (data mode - structured data commands), RSSI (signal report), I (IMU - orientation, calibration, diagnostics)");
+        addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control + U/unblock to reset manual block), N (navigation), W (waypoints), T (time), DM (data mode - structured data commands), RSSI (signal report), I (IMU - orientation, calibration, diagnostics)");
 
         addLog("Boat setup completed.");
         addLog("Free heap: " + String(ESP.getFreeHeap()) + " bytes");
@@ -669,6 +682,11 @@ public:
         allowAdaptiveLoraSwitch = false;
         addLog("❌ Adaptive LoRa switching disabled (MissionControl disconnected)");
         
+        // 🚀 Reset first connection tracking
+        firstConnectionDetected = false;
+        firstAdaptiveProfileSent = false;
+        firstConnectionTime = 0;
+        
         // Сбрасываем кэш для немедленного применения профиля 0
         sensorCache.valid = false;
         
@@ -768,6 +786,55 @@ public:
         // Адаптивная LoRa работает ТОЛЬКО когда MissionControl активен И разрешено переключение
         if (missionCOntrolIsActivae && allowAdaptiveLoraSwitch)
         {
+            // 🚀 FIRST CONNECTION: Send optimal profile after delay
+            if (firstConnectionDetected && !firstAdaptiveProfileSent && 
+                millis() - firstConnectionTime >= FIRST_CONNECTION_DELAY)
+            {
+                addLog("🎯 First connection delay elapsed - sending optimal profile");
+                
+                // Get current RSSI and SNR for profile selection
+                float rssi = loraComm->getRadio().getRSSI();
+                float snr = loraComm->getRadio().getSNR();
+                
+                // Apply GFSK SNR correction if needed
+                RadioMode currentMode = loraComm->mode();
+                if (currentMode == RadioMode::FSK)
+                {
+                    if (rssi > -50.0f) snr = 15.0f;
+                    else if (rssi > -70.0f) snr = 10.0f;
+                    else if (rssi > -85.0f) snr = 8.0f;
+                    else snr = 5.0f;
+                }
+                
+                // Select optimal profile
+                int optimalProfile = selectOptimalProfile(rssi, snr, true);
+                uint8_t currentProfile = loraComm->getCurrentProfileIndex();
+                
+                if (optimalProfile != currentProfile)
+                {
+                    addLog("🎯 First connection: RSSI=" + String(rssi, 1) + "dBm, SNR=" + String(snr, 1) + 
+                           "dB → Sending ASA request for profile " + String(optimalProfile));
+                    
+                    sendAsaRequest(loraComm, optimalProfile, MISSION_CONTROL_ID);
+                    waitingForASAAck = true;
+                    asaProposalTime = millis();
+                    
+                    // Safety: apply immediately if it's a downgrade
+                    if (optimalProfile < currentProfile) {
+                        applyProfile(optimalProfile);
+                        addLog("⬇️ First connection: Emergency downgrade to profile " + String(optimalProfile) + " (applied immediately for safety)");
+                    } else {
+                        addLog("📨 First connection: ASA request sent for upgrade to profile " + String(optimalProfile) + " - waiting for ACK");
+                    }
+                }
+                else
+                {
+                    addLog("🎯 First connection: Current profile " + String(currentProfile) + " is already optimal (RSSI=" + String(rssi, 1) + "dBm)");
+                }
+                
+                firstAdaptiveProfileSent = true; // Mark as sent
+            }
+            
             adaptiveLoraUpdate();
         }
 
@@ -998,6 +1065,11 @@ public:
             return; // Адаптивное переключение запрещено
         }
         
+        // Check if we need to block adaptive switching after manual profile change
+        if (millis() - lastManualProfileChange < MANUAL_PROFILE_BLOCK_TIME) {
+            return; // Block adaptive switching for some time after manual change
+        }
+        
         if (waitingForASAAck || millis() - lastAdaptiveSwitchTime < ADAPTIVE_SWITCH_INTERVAL)
             return;
 
@@ -1074,22 +1146,13 @@ public:
             String direction = bestIndex > currentProfile ? "upgrade" : "downgrade";
             addLog("[adaptiveLoraUpdate] rssi:" + String(PongRssi) + " snr:" + String(snr) +
                    " → Proposing " + direction + " to profile " + String(bestIndex));
-
             sendAsaRequest(loraComm, bestIndex, MISSION_CONTROL_ID);
-            // Поскольку ID теперь присваивается автоматически, мы не можем сохранить ID
-            // для последующего удаления из pending. Это решается на уровне LoRaCore.
             waitingForASAAck = true;
-
-            // 🚀 AGGRESSIVE UPGRADES: Apply upgrades immediately for faster adaptation
-            if (direction == "upgrade" && rssi > -80.0f) {
+            if (direction == "downgrade") {
                 applyProfile(bestIndex);
-                addLog("⬆️ ASA: Immediate upgrade to profile " + String(bestIndex) + " (good signal)");
-            }
-            // For downgrades, apply immediately for safety
-            else if (direction == "downgrade")
-            {
-                applyProfile(bestIndex);
-                addLog("⬇️ ASA: Emergency downgrade to profile " + String(bestIndex));
+                addLog("⬇️ ASA: Emergency downgrade to profile " + String(bestIndex) + " (applied immediately for safety)");
+            } else {
+                addLog("📨 ASA: Proposal sent for " + direction + " to profile " + String(bestIndex) + " - waiting for ACK");
             }
             asaProposalTime = millis();
         }
@@ -1719,9 +1782,16 @@ private:
     SemaphoreHandle_t logMutex = nullptr; // Мьютекс для потокобезопасного логирования
     unsigned long lastPingSent = 0;
     unsigned long lastAdaptiveSwitchTime = 0;
+    unsigned long lastManualProfileChange = 0; // Time when profile was manually changed
     float PongRssi = 0; // RSSI при получении PONG
     bool missionCOntrolIsActivae = false;
     bool allowAdaptiveLoraSwitch = true; // Разрешение на автоматическое переключение профилей
+    
+    // 🚀 First connection adaptive profile logic
+    bool firstConnectionDetected = false;
+    unsigned long firstConnectionTime = 0;
+    bool firstAdaptiveProfileSent = false;
+    static constexpr unsigned long FIRST_CONNECTION_DELAY = 3000; // 3 seconds delay after first connection
 
     // 🚀 Command deduplication system
     struct LastCommand {
@@ -2048,9 +2118,17 @@ private:
                 lastAdaptiveSwitchTime = millis() - ADAPTIVE_SWITCH_INTERVAL; // Force immediate adaptation
                 sensorCache.valid = false; // Force fresh readings
                 
-                // 🔄 Включаем адаптивное переключение при подключении пульта
+                // � Включаем адаптивное переключение при подключении пульта
                 allowAdaptiveLoraSwitch = true;
                 addLog("✅ Adaptive LoRa switching enabled (MissionControl connected)");
+                
+                // 🚀 FIRST CONNECTION: Schedule optimal profile selection after delay
+                if (!firstConnectionDetected) {
+                    firstConnectionDetected = true;
+                    firstConnectionTime = millis();
+                    firstAdaptiveProfileSent = false;
+                    addLog("🎯 First Mission Control connection detected - will send optimal profile in " + String(FIRST_CONNECTION_DELAY/1000) + "s");
+                }
             }
             missionCOntrolIsActivae = true;
         }
