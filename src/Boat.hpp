@@ -50,8 +50,8 @@ static constexpr unsigned long ADAPTIVE_SWITCH_INTERVAL = 8000; // 🚀 Reduced 
 // MAIN BOAT CLASS WITH OPTIMIZATIONS
 // ============================================================================
 static unsigned long lastChannelPrint = 0;
-static unsigned long lastRandomRudderTime = 0;
-static unsigned long nextRandomRudderDelay = 0;
+// static unsigned long lastRandomRudderTime = 0;
+// static unsigned long nextRandomRudderDelay = 0;
 static unsigned long lastControlUpdate = 0;
 
 // ============================================================================
@@ -96,10 +96,9 @@ public:
     unsigned long asaProposalTime = 0;
     unsigned long lastPacketReceived = 0; // обновляется при каждом принятом пакете
     unsigned long asaLastSwitchTime = 0;
-    PacketId_t lastAsaRequestId = 0; // ID последнего отправленного ASA запроса
-    int currentSF = LORA_SF;
-    int currentCR = LORA_CODING_RATE;
-    float currentBW = LORA_BANDWIDTH;
+    // int currentSF = LORA_SF;
+    // int currentCR = LORA_CODING_RATE;
+    // float currentBW = LORA_BANDWIDTH;
 
     void onTelemetry(const PacketTelemetry &tel)
     {
@@ -815,17 +814,11 @@ public:
         updateControlAndNavigation();   // Control and navigation updates
 
         static unsigned long lastOilPumpUpdate = 0;
-        static unsigned long VuPDATE = 0;
+        // static unsigned long VuPDATE = 0;
         if (waitingForASAAck && millis() - asaProposalTime > ASA_TIMEOUT)
         {
             addLog("❌ ASA: Нет ACK от управления. Отклоняем переход.");
-            if (lastAsaRequestId != 0 && loraComm) {// Удаляем ASA запрос из pending списка при таймауте
-                if (loraComm->removePendingPacket(lastAsaRequestId)) {
-                    addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (timeout)");
-                }
-                lastAsaRequestId = 0;
-            }
-            
+            // ASA запросы теперь управляются автоматически через LoRaCore
             waitingForASAAck = false;
         }
         // 🚨 ОБЩАЯ проверка heartbeat от MissionControl (независимо от ASA)
@@ -906,8 +899,6 @@ public:
         // {
         //     PacketBase ping{};
         //     ping.packetType = CMD_PING;
-        //     ping.packetId = nextPacketId++;
-        //     ping.payloadLen = 0;
         //     loraComm->sendPacketBase(MISSION_CONTROL_ID, ping, nullptr, false);
         //     addLog("[PROF:" + String(loraComm->getCurrentProfileIndex()) + "] 🔄 Ping → MC");
         //     lastPingSent = millis();
@@ -1035,7 +1026,7 @@ public:
         rudder.update();
 
         // Проверяем, не нужно ли отправить накопленные ACK
-        checkBulkAckTimeout();
+        loraComm->processBulkAckTimeout(MISSION_CONTROL_ID);
 
         // 🚀 NEW: Structured data transmission
         // processStructuredDataTransmission();
@@ -1054,7 +1045,6 @@ public:
     {
         PacketRssiReport pkt{};
         pkt.packetType = CMD_RSSI_REPORT;
-        pkt.packetId = nextPacketId++;
         pkt.payloadLen = sizeof(pkt.rawRssi) + sizeof(pkt.smoothedRssi);
 
         pkt.rawRssi = loraComm->getRadio().getRSSI();
@@ -1179,9 +1169,9 @@ public:
             addLog("[adaptiveLoraUpdate] rssi:" + String(PongRssi) + " snr:" + String(snr) +
                    " → Proposing " + direction + " to profile " + String(bestIndex));
 
-            sendAsaRequest(loraComm, nextPacketId, bestIndex, MISSION_CONTROL_ID);
-            lastAsaRequestId = nextPacketId; // Сохраняем ID для последующего удаления из pending
-            nextPacketId++;
+            sendAsaRequest(loraComm, bestIndex, MISSION_CONTROL_ID);
+            // Поскольку ID теперь присваивается автоматически, мы не можем сохранить ID
+            // для последующего удаления из pending. Это решается на уровне LoRaCore.
             waitingForASAAck = true;
 
             // 🚀 AGGRESSIVE UPGRADES: Apply upgrades immediately for faster adaptation
@@ -1316,13 +1306,7 @@ public:
     {
         addLog("🔁 Восстановление стандартных LoRa параметров...");
         
-        // Удаляем любой pending ASA запрос
-        if (lastAsaRequestId != 0 && loraComm) {
-            if (loraComm->removePendingPacket(lastAsaRequestId)) {
-                addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (restore defaults)");
-            }
-            lastAsaRequestId = 0;
-        }
+        // ASA запросы теперь управляются автоматически через LoRaCore
         
         applyProfile(0);          // Применяем профиль 0 (стандартный)
         asaActive = false;        // Деактивируем ASA
@@ -1356,18 +1340,11 @@ public:
         }
     }
 
-    const size_t maxPayload = sizeof(((LoRaPacket *)nullptr)->payload); // обычно 40
+    const size_t maxPayload = sizeof(((LoRaPacket *)nullptr)->payload);
 
     // Примерная длина заголовка "[XX/YY]" — максимум 9 символов
     const size_t headerReserve = 10;                             // с запасом
     const size_t jsonChunkSize = maxPayload - headerReserve - 1; // -1 на '\0'
-
-    static void sendStatusJsonTaskWrapper(void *param)
-    {
-        Boat *boat = static_cast<Boat *>(param);
-        boat->sendStatusJsonFragmentsTask();
-        vTaskDelete(nullptr); // убиваем задачу после выполнения
-    }
 
     void sendStatusJsonFragmentsTask()
     {
@@ -1395,7 +1372,7 @@ public:
             // Упаковываем в PacketCommand
             PacketCommand cmd{};
             cmd.packetType = CMD_TELEMETRY_FRAGMENT;
-            cmd.packetId = nextPacketId++;
+            // ID будет автоматически присвоен в LoRaCore
             cmd.payloadLen = std::min<size_t>(payloadStr.length(), MAX_LORA_PAYLOAD);
 
             // Создаём буфер для данных
@@ -1560,13 +1537,6 @@ public:
         cleaned.replace("\n", "");
         cleaned.replace("\x1B", "");
         return cleaned;
-    }
-    void printStatus()
-    {
-        // float v = 0, a = 0;
-        // sensor.read(v, a);
-        // addLog(String("Motor1: ") + temps.get(MOTOR1) + " \t-  Motor 2 " + temps.get(MOTOR2) + " \u00B0C" + String("Radiator: ") + temps.get(MOTOR_RAD) + " \tOil " + temps.get(OIL) + " \u00B0C \tAmbient: " + temps.get(ENV) + " \u00B0C");
-        // addLog(String("Battery voltage: ") + battery.getVoltage() + " V \tRaw ADC value: " + battery.getRaw() + " \t" + battery.getMillivolts() + " mV - BEC in V: " + v + " V\tI: " + a + " A");
     }
 
     void checkFailsafeTransition()
@@ -1787,7 +1757,7 @@ public:
 
         PacketCommand responsePacket{};
         responsePacket.packetType = CMD_COMMAND_RESPONSE;
-        responsePacket.packetId = nextPacketId++;
+        // ID будет автоматически присвоен в LoRaCore
         responsePacket.payloadLen = len;
 
         // Send response to MissionControl
@@ -1805,68 +1775,6 @@ public:
             snprintf(logBuffer, sizeof(logBuffer), "[RESP] Response sent (%zu bytes)", len);
         }
         addLog(String(logBuffer));
-    }
-
-    // Добавить ACK в bulk пакет (для лодки)
-    void addToBulkAck(uint16_t packetId)
-    {
-        if (pendingBulkAck.addAck(packetId))
-        {
-            addLog("[BOAT] 📦 Added ACK for packet " + String(packetId) + " to bulk (" + String(pendingBulkAck.count) + "/10)");
-
-            // Если пакет заполнен или прошло достаточно времени - отправляем
-            if (pendingBulkAck.isFull() ||
-                (millis() - lastBulkAckTime > BULK_ACK_MAX_WAIT_MS && !pendingBulkAck.isEmpty()))
-            {
-                sendBulkAck();
-            }
-        }
-        else
-        {
-            // Пакет переполнен - отправляем текущий и начинаем новый
-            sendBulkAck();
-            if (pendingBulkAck.addAck(packetId)) {
-                addLog("[BOAT] 📦 Started new bulk ACK with packet " + String(packetId));
-            }
-        }
-    }
-
-    // Отправить накопленные ACK (лодка -> MissionControl)
-    void sendBulkAck()
-    {
-        if (pendingBulkAck.isEmpty())
-            return;
-
-        // Диагностика перед отправкой
-        if (pendingBulkAck.hasDuplicates()) {
-            addLog("[BOAT] ⚠️ WARNING: BULK ACK contains duplicates: " + pendingBulkAck.getDebugInfo());
-        }
-
-        pendingBulkAck.packetId = nextPacketId++;
-
-        // Формируем payload: count + массив ID
-        uint8_t payload[1 + 10 * sizeof(uint16_t)];
-        payload[0] = pendingBulkAck.count;
-        memcpy(&payload[1], pendingBulkAck.ackedIds, pendingBulkAck.count * sizeof(uint16_t));
-
-        size_t payloadSize = sizeof(uint8_t) + (pendingBulkAck.count * sizeof(uint16_t));
-
-        // Отправляем bulk ACK в MissionControl
-        loraComm->sendPacketBase(MISSION_CONTROL_ID, pendingBulkAck, payload, false);
-        addLog("[BOAT] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets to MC: " + pendingBulkAck.getDebugInfo());
-
-        pendingBulkAck.clear();
-        lastBulkAckTime = millis();
-    }
-
-    // Проверить, нужно ли отправить bulk ACK по таймауту
-    void checkBulkAckTimeout()
-    {
-        if (!pendingBulkAck.isEmpty() &&
-            (millis() - lastBulkAckTime > BULK_ACK_INTERVAL_MS))
-        {
-            sendBulkAck();
-        }
     }
 
 private:
@@ -1892,13 +1800,6 @@ private:
     float smoothedRssi = -120.0f;  // начальное значение
     const float rssiAlpha = 0.15f; // коэффициент сглаживания (0.1–0.3)
 
-    // Система агрегированных ACK для лодки
-    PacketBulkAck pendingBulkAck;
-    unsigned long lastBulkAckTime = 0;
-    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 1000; // 1 секунда
-
-    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 500; // Максимум 0.5 сек ожидания
-
     float updateSmoothedRssi(float newRssi)
     {
 
@@ -1907,7 +1808,6 @@ private:
     }
 
     String inputBuffer;
-    PacketId_t nextPacketId = 0;
     bool lastTransmitterState = true; // было ли соединение ранее
     bool failsafeTriggered = false;   // уже обработали событие потери
     static constexpr size_t logCapacity = 90;
@@ -2005,9 +1905,7 @@ private:
         updateBoatSettings();
         
         // Используем новую систему структурированных данных
-        PacketBase packetBase;
-        packetBase.packetId = nextPacketId++;
-        
+        PacketBase packetBase;        
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
@@ -2034,9 +1932,7 @@ private:
     void sendStructuredGPS() {
         if (!loraComm) return;
         
-        PacketBase packetBase;
-        packetBase.packetId = nextPacketId++;
-        
+        PacketBase packetBase;        
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
@@ -2050,8 +1946,6 @@ private:
         if (!loraComm) return;
         
         PacketBase packetBase;
-        packetBase.packetId = nextPacketId++;
-        
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
@@ -2064,9 +1958,7 @@ private:
     void sendStructuredSensors() {
         if (!loraComm) return;
         
-        PacketBase packetBase;
-        packetBase.packetId = nextPacketId++;
-        
+        PacketBase packetBase;        
         uint8_t payload[StructuredDataManager::MAX_STRUCTURED_DATA_SIZE];
         size_t payloadSize;
         
@@ -2080,9 +1972,7 @@ private:
         if (!loraComm) return;
         
         PacketBase packetBase;
-        packetBase.packetId = nextPacketId++;
         packetBase.packetType = CMD_STATUS; // Используем существующую команду
-        
         // Простая сериализация LoRa статуса
         uint8_t payload[LoRaStatus::serializedSize()];
         bs.lora.serialize(payload);
@@ -2096,9 +1986,7 @@ private:
         if (!loraComm) return;
         
         PacketBase packetBase;
-        packetBase.packetId = nextPacketId++;
         packetBase.packetType = CMD_NAV; // Используем существующую команду
-        
         // Простая сериализация навигационных данных
         uint8_t payload[NavigationStatus::serializedSize()];
         bs.navigation.serialize(payload);
@@ -2112,9 +2000,7 @@ private:
         if (!loraComm) return;
         
         PacketBase packetBase;
-        packetBase.packetId = nextPacketId++;
         packetBase.packetType = CMD_STATUS; // Используем существующую команду
-        
         // Создаем временную структуру с системной информацией
         struct SystemInfo {
             uint32_t uptime;
@@ -2447,10 +2333,7 @@ private:
             
             // 🚀 FIX: Send PONG response to PING
             PacketCommand pong{};
-            pong.packetType = CMD_PONG;
-            pong.packetId = nextPacketId++;
-            pong.payloadLen = 0;
-            
+            pong.packetType = CMD_PONG;            
             loraComm->sendPacketBase(senderId, pong, nullptr, false);
             addLog("📥 Received PING from " + String(senderId) + ", sent PONG response");
         }
@@ -2664,7 +2547,7 @@ private:
             hdr.packetType != CMD_RSSI_REPORT)
         {
             // Используем bulk ACK вместо мгновенной отправки
-            addToBulkAck(hdr.packetId);
+            loraComm->addAckToBulk(hdr.packetId, MISSION_CONTROL_ID);
             // lastPacketReceived уже обновлен выше для пакетов от MissionControl
         }
     }
@@ -2674,13 +2557,7 @@ private:
         addLog("Got CMD_REPOSNCE_ASA");
         waitingForASAAck = false;
         
-        // Удаляем ASA запрос из pending списка, чтобы избежать ретраев
-        if (lastAsaRequestId != 0 && loraComm) {
-            if (loraComm->removePendingPacket(lastAsaRequestId)) {
-                addLog("🗑️ Removed ASA request id=" + String(lastAsaRequestId) + " from pending (got response)");
-            }
-            lastAsaRequestId = 0;
-        }
+        // ASA запросы теперь управляются автоматически через LoRaCore
         
         asaActive = true;
         asaLastSwitchTime = millis();
@@ -2770,8 +2647,6 @@ private:
         {
             PacketInfoEngine info{};
             info.packetType = CMD_INFO_ENGINE;
-            info.packetId = nextPacketId++;
-            info.payloadLen = 0;
             loraComm->sendPacketBase(senderId, info, nullptr);
             break;
         }
@@ -2779,8 +2654,6 @@ private:
         {
             PacketConfig cfg{};
             cfg.packetType = CMD_CONFIG;
-            cfg.packetId = nextPacketId++;
-            cfg.payloadLen = 0;
             loraComm->sendPacketBase(senderId, cfg, nullptr);
             break;
         }
@@ -2788,7 +2661,6 @@ private:
         {
             PacketNav nav{};
             nav.packetType = CMD_NAV;
-            nav.packetId = nextPacketId++;
             loraComm->sendPacketBase(senderId, nav, nullptr);
             break;
         }

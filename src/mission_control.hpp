@@ -87,7 +87,6 @@ public:
 
             PacketAsaApprove resp;
             resp.packetType = CMD_REPOSNCE_ASA;
-            resp.packetId = nextPacketId++;
             resp.payloadLen = sizeof(uint8_t);
             resp.profileIndex = currentProfileIndex;
             loraComm->sendPacketBase(BOAT_DEVICE_ID, resp, (const uint8_t*)&resp.profileIndex, false);
@@ -145,7 +144,7 @@ public:
         }
         
         // Проверяем, не нужно ли отправить накопленные ACK
-        checkBulkAckTimeout();
+        loraComm->processBulkAckTimeout(BOAT_DEVICE_ID);
     }
 
     // Send an arbitrary command string (e.g. “M:120”)
@@ -165,7 +164,6 @@ public:
 
         PacketCommand cmd{};
         cmd.packetType = CMD_COMMAND_STRING;
-        cmd.packetId = nextPacketId++;
         cmd.payloadLen = len;
 
         // 👇 Передаём стабильный буфер
@@ -187,8 +185,6 @@ public:
     {
         PacketCommand ping{};
         ping.packetType = CMD_PING;
-        ping.packetId = nextPacketId++;
-        ping.payloadLen = 0;
         loraComm->sendPacketBase(BOAT_DEVICE_ID, ping, nullptr, false);
     }
 
@@ -835,7 +831,6 @@ public:
 
 private:
     LoRaCore *loraComm;
-    PacketId_t nextPacketId = 0;
     unsigned long lastBoatActivity = 0;  // 🚀 FIX: Время последней активности лодки (любой пакет)
     int currentProfileIndex = 0;
     unsigned long checkInterval = 60 * 1000; // 🚀 FIX: Увеличено с 45 до 60 секунд
@@ -862,12 +857,6 @@ private:
     static constexpr unsigned long FIRST_PING_INTERVAL = 35000;  // 35 секунд → первый пинг
     static constexpr unsigned long SECOND_PING_INTERVAL = 45000; // 45 секунд → второй пинг
     static constexpr unsigned long PONG_TIMEOUT = 10000; // 10 секунд ждем понг
-
-    // Система агрегированных ACK
-    PacketBulkAck pendingBulkAck;
-    unsigned long lastBulkAckTime = 0;
-    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 1000; // 1 секунда
-    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 500;  // Максимум 0.5 сек ожидания
 
     String timeStr() const
     {
@@ -1077,7 +1066,7 @@ private:
                 }
                 
                 vTaskDelay(pdMS_TO_TICKS(10)); 
-                sendAsaResponse(loraComm, nextPacketId++, profileIndex, sender);
+                sendAsaResponse(loraComm, profileIndex, sender);
                 addLog("3 [MC] ASA Response sent to LORA");
                 vTaskDelay(pdMS_TO_TICKS(900)); 
             }
@@ -1097,9 +1086,6 @@ private:
         {
             PacketCommand pong;
             pong.packetType = CMD_PONG;
-            pong.packetId = nextPacketId++;
-            pong.payloadLen = 0;
-            // loraComm->sendPacket(pong, sender);
             loraComm->sendPacketBase(sender, pong, nullptr, false);
             addLog("[MC] Got PING, sent PONG response");
             break;
@@ -1310,7 +1296,7 @@ private:
 
         if (hdr.packetType != CMD_ACK && hdr.packetType != CMD_BULK_ACK && hdr.packetType != CMD_PING && hdr.packetType != CMD_PONG && hdr.packetType != CMD_REQUEST_ASA && hdr.packetType != CMD_RSSI_REPORT)
         {
-            addToBulkAck(hdr.packetId);// Используем новую систему bulk ACK вместо мгновенной отправки
+            loraComm->addAckToBulk(hdr.packetId, BOAT_DEVICE_ID); // Используем новую централизованную систему bulk ACK
         }
     }
     // MissionControl.hpp
@@ -1319,7 +1305,6 @@ private:
         // что именно спрашиваем: T/I/S/F/G/D/K…
         PacketCommand cmd{};
         cmd.packetType = CMD_REQUEST_INFO;
-        cmd.packetId = nextPacketId++;
         cmd.payloadLen = 1;
         // первый байт payload — нужный код
         uint8_t code = what;
@@ -1333,65 +1318,4 @@ private:
         addLog("[MC] 🛢️ Sent oil pump command: " + cmdStr + " (power: " + String(power) + "%)");
     }
 
-    // Добавить ACK в bulk пакет
-    void addToBulkAck(PacketId_t packetId)
-    {
-        if (pendingBulkAck.addAck(packetId)) {
-            //addLog("[MC] 📦 Added ACK for packet " + String(packetId) + " to bulk (" + String(pendingBulkAck.count) + "/10)");
-            
-            // Если пакет заполнен или прошло достаточно времени - отправляем
-            if (pendingBulkAck.isFull() || 
-                (millis() - lastBulkAckTime > BULK_ACK_MAX_WAIT_MS && !pendingBulkAck.isEmpty())) {
-                sendBulkAck();
-            }
-        } else {
-            // Пакет переполнен - отправляем текущий и начинаем новый
-            sendBulkAck();
-            pendingBulkAck.addAck(packetId);
-            // if (pendingBulkAck.addAck(packetId)) {
-            //     addLog("[MC] 📦 Started new bulk ACK with packet " + String(packetId));
-            // }
-        }
-    }
-    
-    // Отправить накопленные ACK
-    void sendBulkAck()
-    {
-        if (pendingBulkAck.isEmpty()) return;
-        
-        // // Диагностика перед отправкой
-        // if (pendingBulkAck.hasDuplicates()) {
-        //     addLog("[MC] ⚠️ WARNING: BULK ACK contains duplicates: " + pendingBulkAck.getDebugInfo());
-        // }
-        
-        pendingBulkAck.packetId = nextPacketId++;
-        uint8_t payload[1 + 10 * sizeof(PacketId_t)];   // Формируем payload: count + массив ID
-        payload[0] = pendingBulkAck.count;
-        memcpy(&payload[1], pendingBulkAck.ackedIds, pendingBulkAck.count * sizeof(PacketId_t));
-        
-        size_t payloadSize = sizeof(uint8_t) + (pendingBulkAck.count * sizeof(PacketId_t));
-        
-        // Отправляем как высокоприоритетный пакет
-        LoRaPacket bulkPacket = {}; // Initialize to zero
-        packBaseIntoLoRa(bulkPacket, MY_DEVICE_ID, BOAT_DEVICE_ID, pendingBulkAck, payload);
-        
-        if (loraComm->sendHighPriority(bulkPacket)) {
-            addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (high priority): " + pendingBulkAck.getDebugInfo());
-        } else {
-            // Если высокоприоритетная отправка не удалась, используем обычную
-            loraComm->sendPacketBase(BOAT_DEVICE_ID, pendingBulkAck, payload, false);
-            //addLog("[MC] ✅ Sent BULK ACK for " + String(pendingBulkAck.count) + " packets (standard): " + pendingBulkAck.getDebugInfo());
-        }
-        
-        pendingBulkAck.clear();
-        lastBulkAckTime = millis();
-    }
-    
-    void checkBulkAckTimeout()  
-    {   // Проверить, нужно ли отправить bulk ACK по таймауту
-        if (!pendingBulkAck.isEmpty() && 
-            (millis() - lastBulkAckTime > BULK_ACK_INTERVAL_MS)) {
-            sendBulkAck();
-        }
-    }
 };

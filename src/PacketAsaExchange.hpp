@@ -34,10 +34,9 @@ struct PacketAsaExchange : public PacketBase {
 // Утилиты ASA: отправка через экземпляр LoRaCore
 // -----------------------------------------------------------------------------
 
-inline void sendAsaRequest(LoRaCore* loraCore, uint16_t packetId, uint8_t profileIndex, uint8_t receiver) {
+inline void sendAsaRequest(LoRaCore* loraCore, uint8_t profileIndex, uint8_t receiver) {
     if (!loraCore) return;
     PacketAsaExchange pkt(CMD_REQUEST_ASA);
-    pkt.packetId = packetId;
     pkt.setProfile(profileIndex);
     
     // Create proper payload buffer instead of relying on memory layout
@@ -47,10 +46,9 @@ inline void sendAsaRequest(LoRaCore* loraCore, uint16_t packetId, uint8_t profil
     loraCore->sendPacketBase(receiver, pkt, payload, true);  // waitForAck = true!
 }
 
-inline void sendAsaResponse(LoRaCore* loraCore, uint16_t packetId, uint8_t profileIndex, uint8_t receiver) {
+inline void sendAsaResponse(LoRaCore* loraCore, uint8_t profileIndex, uint8_t receiver) {
     if (!loraCore) return;
     PacketAsaExchange pkt(CMD_REPOSNCE_ASA);
-    pkt.packetId = packetId;
     pkt.setProfile(profileIndex);
     
     // Create proper payload buffer instead of relying on memory layout

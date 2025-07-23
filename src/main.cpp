@@ -96,7 +96,6 @@ void loop()
     // boat.addLog("🔄 Roll: " + String(orientation.roll, 1) + "° Pitch: " + 
     //             String(orientation.pitch, 1) + "° Yaw: " + String(orientation.yaw, 1) + "°");
 
-    boat.printStatus();
   }
 #elif defined(ROLE_MC)
   // Обрабатываем входящие LoRa-пакеты и внутренние таймеры MissionControl

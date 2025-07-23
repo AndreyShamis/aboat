@@ -106,6 +106,18 @@ private:
     static constexpr float RSSI_ENTER_FSK = -85.0f;
     static constexpr float RSSI_LEAVE_FSK = -92.0f;
     static constexpr float SNR_ENTER_FSK = 8.0f;
+    PacketId_t nextPacketId{0}; // Централизованный счетчик ID пакетов
+
+    // Система агрегированных ACK
+    PacketBulkAck pendingBulkAck;
+    unsigned long lastBulkAckTime = 0;
+    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 1000; // 1 секунда
+    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 500; // Максимум 0.5 сек ожидания
+
+    // Получить следующий ID пакета (только для внутреннего использования)
+    PacketId_t getNextPacketId() {
+        return ++nextPacketId;
+    }
 
     void putToLogBuffer(const String& msg)
     {
@@ -332,6 +344,71 @@ private:
         for (uint8_t i = 0; i < uniqueCount; i++) // Обрабатываем только уникальные ID
         {
             handleSingleAck(uniqueIds[i], pkt.getSenderId(), pkt.packetType);
+        }
+    }
+
+    // Добавить ACK в bulk пакет
+    void addToBulkAck(PacketId_t packetId, uint8_t targetDeviceId)
+    {
+        if (pendingBulkAck.addAck(packetId))
+        {
+            char s[100];
+            snprintf(s, sizeof(s), "📦 Added ACK for packet %u to bulk (%u/10)", packetId, pendingBulkAck.count);
+            putToLogBuffer(String(s));
+
+            // Если пакет заполнен или прошло достаточно времени - отправляем
+            if (pendingBulkAck.isFull() ||
+                (millis() - lastBulkAckTime > BULK_ACK_MAX_WAIT_MS && !pendingBulkAck.isEmpty()))
+            {
+                sendBulkAck(targetDeviceId);
+            }
+        }
+        else
+        {
+            // Пакет переполнен - отправляем текущий и начинаем новый
+            sendBulkAck(targetDeviceId);
+            if (pendingBulkAck.addAck(packetId)) {
+                char s[100];
+                snprintf(s, sizeof(s), "📦 Started new bulk ACK with packet %u", packetId);
+                putToLogBuffer(String(s));
+            }
+        }
+    }
+
+    // Отправить накопленные ACK
+    void sendBulkAck(uint8_t targetDeviceId)
+    {
+        if (pendingBulkAck.isEmpty())
+            return;
+
+        // Диагностика перед отправкой
+        if (pendingBulkAck.hasDuplicates()) {
+            putToLogBuffer(String("⚠️ WARNING: BULK ACK contains duplicates: ") + pendingBulkAck.getDebugInfo());
+        }
+
+        // Формируем payload: count + массив ID
+        uint8_t payload[1 + 10 * sizeof(PacketId_t)];
+        payload[0] = pendingBulkAck.count;
+        memcpy(&payload[1], pendingBulkAck.ackedIds, pendingBulkAck.count * sizeof(PacketId_t));
+
+        size_t payloadSize = sizeof(uint8_t) + (pendingBulkAck.count * sizeof(PacketId_t));
+
+        // Отправляем bulk ACK
+        sendPacketBase(targetDeviceId, pendingBulkAck, payload, false);
+        
+        putToLogBuffer(String("✅ Sent BULK ACK for ") + String(pendingBulkAck.count) + " packets: " + pendingBulkAck.getDebugInfo());
+
+        pendingBulkAck.clear();
+        lastBulkAckTime = millis();
+    }
+
+    // Проверить, нужно ли отправить bulk ACK по таймауту
+    void checkBulkAckTimeout(uint8_t targetDeviceId)
+    {
+        if (!pendingBulkAck.isEmpty() &&
+            (millis() - lastBulkAckTime > BULK_ACK_INTERVAL_MS))
+        {
+            sendBulkAck(targetDeviceId);
         }
     }
 
@@ -821,8 +898,13 @@ public:
     {
         if (!outgoingQueue)
             return false;
+        
+        // Создаем копию базового пакета и автоматически присваиваем новый ID
+        PacketBase modifiedBase = base;
+        modifiedBase.packetId = getNextPacketId();
+        
         LoRaPacket frame = {}; // Initialize to zero
-        packBaseIntoLoRa(frame, myDeviceId, receiverId, base, payload);
+        packBaseIntoLoRa(frame, myDeviceId, receiverId, modifiedBase, payload);
         bool ok = xQueueSendToBack(outgoingQueue, &frame, 0) == pdTRUE;
         if (ok && waitForAck)
         {
@@ -871,6 +953,31 @@ public:
     }
 
     // DIAGNOSTIC AND MAINTENANCE METHODS
+    
+    // Получить текущий ID (без инкремента) - только для диагностики
+    PacketId_t getCurrentPacketId() const {
+        return nextPacketId;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // BULK ACK MANAGEMENT
+    // ═══════════════════════════════════════════════════════════════════════════
+    
+    // Добавить ACK в bulk пакет (публичный интерфейс)
+    void addAckToBulk(PacketId_t packetId, uint8_t targetDeviceId) {
+        addToBulkAck(packetId, targetDeviceId);
+    }
+    
+    // Принудительно отправить накопленные ACK
+    void flushBulkAck(uint8_t targetDeviceId) {
+        sendBulkAck(targetDeviceId);
+    }
+    
+    // Проверить таймаут bulk ACK (вызывать в главном цикле)
+    void processBulkAckTimeout(uint8_t targetDeviceId) {
+        checkBulkAckTimeout(targetDeviceId);
+    }
+    
     size_t getPendingCount() const
     {
         if (!pendingMutex)
