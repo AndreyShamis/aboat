@@ -2798,17 +2798,4 @@ private:
         }
     }
 
-    void sendAckPacket(uint16_t ackedId, uint8_t receiverId)
-    {
-        PacketAck ackOut{};
-        ackOut.packetType = CMD_ACK;
-        ackOut.packetId = nextPacketId++;
-        ackOut.ackedId = ackedId;
-        ackOut.payloadLen = sizeof(ackOut.ackedId);
-
-        uint8_t ackBuf[sizeof(ackOut.ackedId)];
-        memcpy(ackBuf, &ackOut.ackedId, sizeof(uint16_t));
-
-        loraComm->sendPacketBase(receiverId, ackOut, ackBuf, false);
-    }
 };
