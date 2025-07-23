@@ -35,9 +35,6 @@
 
 using namespace ArduinoJson;
 
-// ============================================================================
-// PERFORMANCE OPTIMIZATION CONSTANTS
-// ============================================================================
 static constexpr unsigned long CHANNEL_PRINT_INTERVAL = 2000;
 static constexpr unsigned long CONTROL_INTERVAL = 100; // 10 Hz
 static constexpr unsigned long RSSI_REPORT_INTERVAL = 27123;
@@ -46,19 +43,9 @@ static constexpr unsigned long ASA_TIMEOUT = 15007;
 static constexpr unsigned long ACTIVITY_TIMEOUT = 42777;
 static constexpr unsigned long ADAPTIVE_SWITCH_INTERVAL = 8000; // 🚀 Reduced from 25s to 8s for faster adaptation
 
-// ============================================================================
-// MAIN BOAT CLASS WITH OPTIMIZATIONS
-// ============================================================================
 static unsigned long lastChannelPrint = 0;
-// static unsigned long lastRandomRudderTime = 0;
-// static unsigned long nextRandomRudderDelay = 0;
 static unsigned long lastControlUpdate = 0;
 
-// ============================================================================
-// HELPER CLASSES AND STRUCTURES
-// ============================================================================
-
-// Simple performance monitoring
 
 class Boat : LogInterface
 {
@@ -79,81 +66,41 @@ public:
     bool updateStarted = false;
     LoRaCore *loraComm; // Unified LoRa communication object
     Adafruit_PWMServoDriver pwm = Adafruit_PWMServoDriver(0x40);
-
     TaskHandle_t sendStatusTaskHandle = nullptr;
     bool statusTaskRunning = false;
-
-    // 🚀 NEW: Structured data transmission system
+    // NEW: Structured data transmission system
     BoatSettings bs;      // Текущее состояние лодки
     unsigned long lastHeartbeatSent = 0;   // Время последнего heartbeat
     unsigned long lastFullStatusSent = 0;  // Время последнего полного статуса
     unsigned long lastDataUpdate = 0;      // Время последнего обновления данных
     bool useStructuredData = true;         // Флаг использования новой системы
     static constexpr unsigned long DATA_UPDATE_INTERVAL = 1000;   // 1 секунда
-
     bool waitingForASAAck = false;
     bool asaActive = false;
     unsigned long asaProposalTime = 0;
     unsigned long lastPacketReceived = 0; // обновляется при каждом принятом пакете
     unsigned long asaLastSwitchTime = 0;
-    // int currentSF = LORA_SF;
-    // int currentCR = LORA_CODING_RATE;
-    // float currentBW = LORA_BANDWIDTH;
 
-    void onTelemetry(const PacketTelemetry &tel)
-    {
-        addLog("Received telemetry fragment: len=" + String(tel.payloadLen));
-        // собрать, parse и т.д.
-    }
-
-    void onInfoEngine(const PacketInfoEngine &info)
-    {
-        addLog("InfoEngine packet received");
-    }
-
-    void onStatus(const PacketStatus &st)
-    {
-        addLog("Status packet received");
-    }
-
-    void onAck(const PacketAck &ack)
-    {
-        addLog("ACK for ID=" + String(ack.ackedId));
-    }
-
-    void onConfig(const PacketConfig &cfg)
-    {
-        addLog("Config packet received");
-    }
-
-    void onNav(const PacketNav &nav)
-    {
-        addLog("Nav packet received");
-    }
-
-    void onHeartbeat(const PacketHeartbeat &hb)
-    {
-        addLog("Heartbeat packet received");
-    }
+    // Unified packet handlers for simple logging
+    void onTelemetry(const PacketTelemetry &tel) { addLog("Received telemetry fragment: len=" + String(tel.payloadLen)); }
+    void onInfoEngine(const PacketInfoEngine &info) { addLog("InfoEngine packet received"); }
+    void onStatus(const PacketStatus &st) { addLog("Status packet received"); }
+    void onAck(const PacketAck &ack) { addLog("ACK for ID=" + String(ack.ackedId)); }
+    void onConfig(const PacketConfig &cfg) { addLog("Config packet received"); }
+    void onNav(const PacketNav &nav) { addLog("Nav packet received"); }
+    void onHeartbeat(const PacketHeartbeat &hb) { addLog("Heartbeat packet received"); }
 
     Boat() : imu(this), sensor(0x48), gnss(Serial2)
     {
         loraComm = new LoRaCore(BOAT_DEVICE_ID, this);
         // Создаем мьютекс для потокобезопасного логирования
         logMutex = xSemaphoreCreateMutex();
-        if (logMutex == nullptr)
-        {
-            Serial.println("ERROR: Failed to create log mutex!");
-        }
+        if (logMutex == nullptr){Serial.println("ERROR: Failed to create log mutex!");}
     }
     ~Boat()
     {
         delete loraComm;
-        // Освобождаем мьютекс
-        if (logMutex != nullptr)
-        {
-            vSemaphoreDelete(logMutex);
-        }
+        if (logMutex != nullptr){ vSemaphoreDelete(logMutex);}
     }
 
     // Helper function to register command with response
@@ -272,39 +219,20 @@ public:
         engine.begin(MOTOR_LEFT, MOTOR_RIGHT);
         addLog("Boat finish setup");
 
-        parser.registerCommand("M", [this](const String &arg)
-                               {
-                                    addLog("[CMD M] Motor power set to: " + arg);
-                                    int power = arg.toInt();
-                                    engine.apply(power, 1500); });
+        // Basic motor/engine commands with simplified logging
+        parser.registerCommand("M", [this](const String &arg) {
+            engine.apply(arg.toInt(), 1500); });
 
-        parser.registerCommand("E", [this](const String &arg)
-                               {
-                                    addLog("[CMD E] Engine power set to: " + arg);
-                                        if (arg=="S") {
-                                            addLog("[CMD E] Engine stopped");
-                                            engine.setState(MotorEngineControl::MOTOR_STOP);
-                                        } else if(arg=="F") {
-                                            addLog("[CMD E] Engine forward");
-                                            engine.setState(MotorEngineControl::MOTOR_FORWARD);
-                                        } else if(arg=="R") {
-                                            addLog("[CMD E] Engine reverse");
-                                            engine.setState(MotorEngineControl::MOTOR_REVERSE);
-                                        } else {
-                                            addLog("[CMD E] Unknown engine command: " + arg);
-                                        } });
+        parser.registerCommand("E", [this](const String &arg) {
+            if (arg=="S") engine.setState(MotorEngineControl::MOTOR_STOP);
+            else if (arg=="F") engine.setState(MotorEngineControl::MOTOR_FORWARD);
+            else if (arg=="R") engine.setState(MotorEngineControl::MOTOR_REVERSE); });
 
-        parser.registerCommand("R", [this](const String &arg)
-                               {
-                                    addLog("[CMD R] Rudder angle set to: " + arg);
-                                    int angle = arg.toInt();
-                                    rudder.setAngle(angle); });
+        parser.registerCommand("R", [this](const String &arg) {
+            rudder.setAngle(arg.toInt()); });
 
-        parser.registerCommand("P", [this](const String &arg)
-                               {
-                                    addLog("[CMD P] Oil pump set to: " + arg);
-                                    int speed = arg.toInt();
-                                    oilPump.setSpeed(speed); });
+        parser.registerCommand("P", [this](const String &arg) {
+            oilPump.setSpeed(arg.toInt()); });
 
         // LoRa commands with simplified registration
         registerCommandWithResponse("L", [this](const String &arg) {
@@ -453,32 +381,22 @@ public:
     {
         String response = "D:";
         if (arg == "S") {
-            String status = safetyMonitor.getStatusString();
-            addLog("[DIAG] " + status);
-            response += "Safety:" + status;
+            response += "Safety:" + safetyMonitor.getStatusString();
         } else if (arg == "P") {
-            String perfInfo = "avg=" + String(performanceMetrics.getAverageKeepTime()) + 
-                   "ms,max=" + String(performanceMetrics.maxKeepDuration) + "ms";
-            addLog("[DIAG] Performance: " + perfInfo);
-            response += "Performance:" + perfInfo;
+            response += "Performance:avg=" + String(performanceMetrics.getAverageKeepTime()) + 
+                       "ms,max=" + String(performanceMetrics.maxKeepDuration) + "ms";
         } else if (arg == "T") {
-            String tempInfo = "M1=" + String(temps.get(MOTOR1)) + 
-                   "C,M2=" + String(temps.get(MOTOR2)) + "C";
-            addLog("[DIAG] Temps: " + tempInfo);
-            response += "Temps:" + tempInfo;
+            response += "Temps:M1=" + String(temps.get(MOTOR1)) + 
+                       "C,M2=" + String(temps.get(MOTOR2)) + "C";
         } else if (arg == "R") {
             performanceMetrics.reset();
-            addLog("[DIAG] Performance metrics reset");
             response += "Performance metrics reset";
         } else if (arg == "full" || arg.isEmpty()) {
             response += buildFullDiagnostic();
         } else if (arg == "extended" || arg == "ext") {
             response += buildExtendedDiagnostic();
         } else if (arg == "stack" || arg == "st") {
-            String stackReport = stackMonitor.getReport();
-            addLog("[DIAG] Stack report:");
-            addLog(stackReport);
-            response += "Stack Report:\n" + stackReport;
+            response += "Stack Report:\n" + stackMonitor.getReport();
         } else {
             response += "Unknown diagnostic command:" + arg;
         }
@@ -490,19 +408,11 @@ public:
         String safetyInfo = safetyMonitor.getStatusString();
         if (safetyInfo.length() > 30) safetyInfo = safetyInfo.substring(0, 30) + "...";
         
-        String perfInfo = "avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms";
-        String tempInfo = "M1=" + String(temps.get(MOTOR1), 1) + "C,M2=" + String(temps.get(MOTOR2), 1) + "C";
-        String gpsInfo = (gnss.hasValidFix() ? "OK" : "NO_FIX");
-        String heapInfo = String(ESP.getFreeHeap());
-        
-        String fullDiag = "Safety:" + safetyInfo + 
-                         ";Perf:" + perfInfo +
-                         ";Temps:" + tempInfo +
-                         ";GPS:" + gpsInfo +
-                         ";Heap:" + heapInfo;
-        
-        addLog("[DIAG] Full diagnostic (" + String(fullDiag.length()) + " bytes): " + fullDiag);
-        return fullDiag;
+        return "Safety:" + safetyInfo + 
+               ";Perf:avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms" +
+               ";Temps:M1=" + String(temps.get(MOTOR1), 1) + "C,M2=" + String(temps.get(MOTOR2), 1) + "C" +
+               ";GPS:" + (gnss.hasValidFix() ? "OK" : "NO_FIX") +
+               ";Heap:" + String(ESP.getFreeHeap());
     }
 
     String buildExtendedDiagnostic()
@@ -2293,6 +2203,9 @@ private:
         // Log the command like in oldHandlePacket
         addLog("Got COMMND: TYPE" + (char)cmd.packetType + String(":") + s);
         
+        // Send ACK for command packets FIRST (before deduplication check)
+        loraComm->addAckToBulk(cmd.packetId, senderId);
+        
         // 🚀 Command deduplication check
         unsigned long now = millis();
         if (lastProcessedCommand.packetId == cmd.packetId && 
@@ -2312,6 +2225,15 @@ private:
         parser.processLine(s);
 
         // Update RSSI and mission control status (no need to duplicate here as it's done in handleLoRaPacketOptimized)
+    }
+
+    // Helper template function to create packets from buffer (reduces code duplication)
+    template<typename T>
+    void createPacketFromBuffer(T& packet, const PacketBase &hdr, const uint8_t *buf, size_t safeLen) {
+        packet.packetType = hdr.packetType;
+        packet.packetId = hdr.packetId;
+        packet.payloadLen = hdr.payloadLen;
+        memcpy(reinterpret_cast<uint8_t *>(&packet) + sizeof(PacketBase), buf, safeLen);
     }
 
     void processPingPongPacket(const PacketBase &hdr, uint8_t senderId)
@@ -2360,7 +2282,6 @@ private:
         {
         case CMD_TELEMETRY_FRAGMENT:
         {
-            addLog("Got CMD_TELEMETRY_FRAGMENT");
             PacketTelemetry tel{};
             tel.packetType = hdr.packetType;
             tel.packetId = hdr.packetId;
@@ -2373,79 +2294,43 @@ private:
         }
         case CMD_INFO_ENGINE:
         {
-            addLog("Got CMD_INFO_ENGINE");
             PacketInfoEngine info{};
-            info.packetType = hdr.packetType;
-            info.packetId = hdr.packetId;
-            info.payloadLen = hdr.payloadLen;
-            memcpy(reinterpret_cast<uint8_t *>(&info) + sizeof(PacketBase),
-                   buf,
-                   safeLen);
+            createPacketFromBuffer(info, hdr, buf, safeLen);
             onInfoEngine(info);
             break;
         }
         case CMD_STATUS:
         {
-            addLog("Got CMD_STATUS");
             PacketStatus st{};
-            st.packetType = hdr.packetType;
-            st.packetId = hdr.packetId;
-            st.payloadLen = hdr.payloadLen;
-            memcpy(reinterpret_cast<uint8_t *>(&st) + sizeof(PacketBase),
-                   buf,
-                   safeLen);
+            createPacketFromBuffer(st, hdr, buf, safeLen);
             onStatus(st);
             break;
         }
         case CMD_ACK:
         {
-            addLog("Got CMD_ACK");
             PacketAck ackIn{};
-            ackIn.packetType = hdr.packetType;
-            ackIn.packetId = hdr.packetId;
-            ackIn.payloadLen = hdr.payloadLen;
-            memcpy(reinterpret_cast<uint8_t *>(&ackIn) + sizeof(PacketBase),
-                   buf,
-                   safeLen);
+            createPacketFromBuffer(ackIn, hdr, buf, safeLen);
             onAck(ackIn);
             break;
         }
         case CMD_CONFIG:
         {
-            addLog("Got CMD_CONFIG");
             PacketConfig cfg{};
-            cfg.packetType = hdr.packetType;
-            cfg.packetId = hdr.packetId;
-            cfg.payloadLen = hdr.payloadLen;
-            memcpy(reinterpret_cast<uint8_t *>(&cfg) + sizeof(PacketBase),
-                   buf,
-                   safeLen);
+            createPacketFromBuffer(cfg, hdr, buf, safeLen);
             onConfig(cfg);
             break;
         }
         case CMD_NAV:
         {
-            addLog("Got CMD_NAV");
             PacketNav nav{};
-            nav.packetType = hdr.packetType;
-            nav.packetId = hdr.packetId;
-            nav.payloadLen = hdr.payloadLen;
-            memcpy(reinterpret_cast<uint8_t *>(&nav) + sizeof(PacketBase),
-                   buf,
-                   safeLen);
+            createPacketFromBuffer(nav, hdr, buf, safeLen);
             onNav(nav);
             break;
         }
         case CMD_HEARTBEAT:
         {
-            addLog("Got CMD_HEARTBEAT");
             PacketHeartbeat hb{};
-            hb.packetType = hdr.packetType;
-            hb.packetId = hdr.packetId;
-            hb.payloadLen = hdr.payloadLen;
-            memcpy(reinterpret_cast<uint8_t *>(&hb) + sizeof(PacketBase),
-                   buf,
-                   safeLen);
+            createPacketFromBuffer(hb, hdr, buf, safeLen);
             onHeartbeat(hb);
             break;
         }
@@ -2453,7 +2338,6 @@ private:
             handleASAResponse(hdr, buf);
             break;
         case CMD_GET_BOAT_STATUS:
-            addLog("Got CMD_GET_BOAT_STATUS");
             sendStatusJsonFragmentsTask();
             break;
         case CMD_REQUEST_INFO:
@@ -2537,7 +2421,7 @@ private:
             hdr.packetType != CMD_RSSI_REPORT)
         {
             // Используем bulk ACK вместо мгновенной отправки
-            loraComm->addAckToBulk(hdr.packetId, MISSION_CONTROL_ID);
+            loraComm->addAckToBulk(hdr.packetId, senderId);
             // lastPacketReceived уже обновлен выше для пакетов от MissionControl
         }
     }

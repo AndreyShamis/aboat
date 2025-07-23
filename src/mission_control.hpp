@@ -587,13 +587,13 @@ public:
             requestTelemetry();
         }
         else if (cmd.startsWith("P:")) {
-            // Oil pump command P:1-P:100
+            // Oil pump command P:0-P:100
             String param = cmd.substring(2);
             int pumpPower = param.toInt();
-            if (pumpPower >= 1 && pumpPower <= 100) {
+            if (pumpPower >= 0 && pumpPower <= 100) {
                 sendOilPumpCommand(pumpPower);
             } else {
-                addLog("[MC] ❌ Invalid pump power: " + param + " (must be 1-100)");
+                addLog("[MC] ❌ Invalid pump power: " + param + " (must be 0-100)");
             }
         }
         else if (cmd == "P") {
