@@ -86,6 +86,9 @@ private:
     std::vector<String> logBuffer;
     SemaphoreHandle_t logMutex = nullptr;
     static const size_t MAX_LOG_BUFFER_SIZE = 30;
+    
+    // Флаг активного приема - блокирует передачу
+    volatile bool receivingInProgress = false;
     uint8_t currentMaxRetries = 2;
     uint32_t currentRetryTimeoutMs = 6200;
     static const uint32_t FAST_TX_THRESHOLD_MS = 100;  // Быстрая передача < 100мс
@@ -111,8 +114,8 @@ private:
     // Система агрегированных ACK
     PacketBulkAck pendingBulkAck;
     unsigned long lastBulkAckTime = 0;
-    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 1000; // 1 секунда
-    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 500; // Максимум 0.5 сек ожидания
+    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 400; // 1 секунда
+    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 150; // Максимум 0.5 сек ожидания
 
     // Получить следующий ID пакета (только для внутреннего использования)
     PacketId_t getNextPacketId() {
@@ -508,8 +511,13 @@ private:
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // спим до события
 
             fullLog = "";
-            if (radioSemaphore)
-                xSemaphoreTake(radioSemaphore, portMAX_DELAY);
+            
+            // Устанавливаем флаг активного приема - это блокирует передачу
+            receivingInProgress = true;
+            
+            // Пытаемся захватить семафор неблокирующе
+            if (radioSemaphore && xSemaphoreTake(radioSemaphore, 0) == pdTRUE) {
+                // Захватили семафор - можем читать
             unsigned long t0 = millis();
             int len = radio.getPacketLength();
 
@@ -523,6 +531,7 @@ private:
                     radio.startReceive();
                     if (radioSemaphore)
                         xSemaphoreGive(radioSemaphore);
+                    receivingInProgress = false; // Сбрасываем флаг при ошибке
                     continue;
                 }
 
@@ -536,6 +545,7 @@ private:
                 {
                     if (radioSemaphore)
                         xSemaphoreGive(radioSemaphore);
+                    receivingInProgress = false; // Сбрасываем флаг при отфильтровке
                     continue;
                 }
             
@@ -579,10 +589,18 @@ private:
 
             if (radioSemaphore)
                 xSemaphoreGive(radioSemaphore);
+            
+            // Сбрасываем флаг приема - разрешаем передачу
+            receivingInProgress = false;
 
             if (fullLog.length() > 0)
             {
                 putToLogBuffer(fullLog);
+            }
+            } else {
+                // Не смогли захватить семафор - передача идет, подождем немного
+                receivingInProgress = false;
+                vTaskDelay(pdMS_TO_TICKS(1)); // Короткая пауза
             }
         }
     }
@@ -593,10 +611,29 @@ private:
         while (true)
         {
             LoRaPacket pkt = {};
-            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(15)) == pdTRUE)
+            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(25)) == pdTRUE)
             {
+                // КРИТИЧНО: Проверяем флаг активного приема
+                // Если идет прием - НЕ ПЕРЕДАЕМ, возвращаем пакет в очередь
+                if (receivingInProgress) {
+                    // Возвращаем пакет в начало очереди для повторной попытки
+                    xQueueSendToFront(outgoingQueue, &pkt, 0);
+                    vTaskDelay(pdMS_TO_TICKS(1)); // Короткая пауза
+                    continue;
+                }
+                
                 if (radioSemaphore)
                     xSemaphoreTake(radioSemaphore, portMAX_DELAY);
+
+                // Двойная проверка: возможно прием начался пока мы ждали семафор
+                if (receivingInProgress) {
+                    // Освобождаем семафор и возвращаем пакет в очередь
+                    if (radioSemaphore)
+                        xSemaphoreGive(radioSemaphore);
+                    xQueueSendToFront(outgoingQueue, &pkt, 0);
+                    vTaskDelay(pdMS_TO_TICKS(1));
+                    continue;
+                }
 
                 radio.standby();
                 ssize_t len = offsetof(LoRaPacket, payload) + pkt.payloadLen;
@@ -643,7 +680,7 @@ private:
                 if (radioSemaphore)
                     xSemaphoreGive(radioSemaphore);
             }
-            uint32_t randomDelay = 3 + (esp_random() % 5);
+            uint32_t randomDelay = 10 + (esp_random() % 10);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
