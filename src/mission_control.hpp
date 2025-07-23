@@ -85,9 +85,7 @@ public:
             currentProfileIndex = 0;
             const auto &profile = loraProfiles[currentProfileIndex];
 
-            PacketAsaApprove resp;
-            resp.packetType = CMD_REPOSNCE_ASA;
-            resp.payloadLen = sizeof(uint8_t);
+            PacketAsaApprove resp; // конструктор автоматически установит packetType = CMD_ACK_ASA
             resp.profileIndex = currentProfileIndex;
             loraComm->sendPacketBase(BOAT_DEVICE_ID, resp, (const uint8_t*)&resp.profileIndex, false);
             vTaskDelay(pdMS_TO_TICKS(1000));
@@ -162,8 +160,7 @@ public:
         uint8_t tempBuf[MAX_LORA_PAYLOAD];
         memcpy(tempBuf, cmdStr.c_str(), len);
 
-        PacketCommand cmd{};
-        cmd.packetType = CMD_COMMAND_STRING;
+        PacketCommand cmd{}; // конструктор автоматически установит packetType = CMD_COMMAND_STRING
         cmd.payloadLen = len;
 
         // 👇 Передаём стабильный буфер
@@ -183,8 +180,7 @@ public:
     
     void sendPingToBoat()
     {
-        PacketCommand ping{};
-        ping.packetType = CMD_PING;
+        PacketPing ping{}; // конструктор автоматически установит packetType = CMD_PING
         loraComm->sendPacketBase(BOAT_DEVICE_ID, ping, nullptr, false);
     }
 
@@ -1084,8 +1080,7 @@ private:
 
         case CMD_PING:
         {
-            PacketCommand pong;
-            pong.packetType = CMD_PONG;
+            PacketPong pong; // конструктор автоматически установит packetType = CMD_PONG
             loraComm->sendPacketBase(sender, pong, nullptr, false);
             addLog("[MC] Got PING, sent PONG response");
             break;
@@ -1106,8 +1101,7 @@ private:
         }
         case CMD_RSSI_REPORT:
         {
-            PacketRssiReport rpt{};
-            rpt.packetType = hdr.packetType;
+            PacketRssiReport rpt{}; // конструктор автоматически установит packetType = CMD_RSSI_REPORT
             rpt.packetId = hdr.packetId;
             rpt.payloadLen = hdr.payloadLen;
             memcpy(reinterpret_cast<uint8_t *>(&rpt) + sizeof(PacketBase), buf, hdr.payloadLen);
@@ -1303,9 +1297,8 @@ private:
     void sendInfoRequest(CommandType what)
     {
         // что именно спрашиваем: T/I/S/F/G/D/K…
-        PacketCommand cmd{};
-        cmd.packetType = CMD_REQUEST_INFO;
-        cmd.payloadLen = 1;
+        PacketRequestInfo cmd{}; // конструктор автоматически установит packetType = CMD_REQUEST_INFO
+        cmd.requestType = what;
         // первый байт payload — нужный код
         uint8_t code = what;
         loraComm->sendPacketBase(BOAT_DEVICE_ID, cmd, (const uint8_t*)&code);

@@ -898,7 +898,6 @@ public:
         // if (missionCOntrolIsActivae && millis() - lastPingSent >= PING_INTERVAL && !waitingForASAAck)
         // {
         //     PacketBase ping{};
-        //     ping.packetType = CMD_PING;
         //     loraComm->sendPacketBase(MISSION_CONTROL_ID, ping, nullptr, false);
         //     addLog("[PROF:" + String(loraComm->getCurrentProfileIndex()) + "] 🔄 Ping → MC");
         //     lastPingSent = millis();
@@ -1043,10 +1042,7 @@ public:
 
     void sendRssiReport(uint8_t receiverId)
     {
-        PacketRssiReport pkt{};
-        pkt.packetType = CMD_RSSI_REPORT;
-        pkt.payloadLen = sizeof(pkt.rawRssi) + sizeof(pkt.smoothedRssi);
-
+        PacketRssiReport pkt{}; // конструктор автоматически установит packetType = CMD_RSSI_REPORT
         pkt.rawRssi = loraComm->getRadio().getRSSI();
         pkt.smoothedRssi = smoothedRssi;
 
@@ -1369,9 +1365,8 @@ public:
             String fragment = json.substring(i * jsonChunkSize, (i + 1) * jsonChunkSize);
             String payloadStr = header + fragment;
 
-            // Упаковываем в PacketCommand
-            PacketCommand cmd{};
-            cmd.packetType = CMD_TELEMETRY_FRAGMENT;
+            // Упаковываем в PacketTelemetryFragment
+            PacketTelemetryFragment cmd{}; // конструктор автоматически установит packetType = CMD_TELEMETRY_FRAGMENT
             // ID будет автоматически присвоен в LoRaCore
             cmd.payloadLen = std::min<size_t>(payloadStr.length(), MAX_LORA_PAYLOAD);
 
@@ -1755,8 +1750,7 @@ public:
         uint8_t tempBuf[MAX_LORA_PAYLOAD];
         memcpy(tempBuf, payload.c_str(), len);
 
-        PacketCommand responsePacket{};
-        responsePacket.packetType = CMD_COMMAND_RESPONSE;
+        PacketCommandResponse responsePacket{}; // конструктор автоматически установит packetType = CMD_COMMAND_RESPONSE
         // ID будет автоматически присвоен в LoRaCore
         responsePacket.payloadLen = len;
 
@@ -1971,8 +1965,7 @@ private:
     void sendStructuredLoRaStatus() {
         if (!loraComm) return;
         
-        PacketBase packetBase;
-        packetBase.packetType = CMD_STATUS; // Используем существующую команду
+        PacketStatus packetBase; // конструктор автоматически установит packetType = CMD_STATUS
         // Простая сериализация LoRa статуса
         uint8_t payload[LoRaStatus::serializedSize()];
         bs.lora.serialize(payload);
@@ -1985,8 +1978,7 @@ private:
     void sendStructuredNavigation() {
         if (!loraComm) return;
         
-        PacketBase packetBase;
-        packetBase.packetType = CMD_NAV; // Используем существующую команду
+        PacketNav packetBase; // конструктор автоматически установит packetType = CMD_NAV
         // Простая сериализация навигационных данных
         uint8_t payload[NavigationStatus::serializedSize()];
         bs.navigation.serialize(payload);
@@ -1999,8 +1991,7 @@ private:
     void sendStructuredSystemInfo() {
         if (!loraComm) return;
         
-        PacketBase packetBase;
-        packetBase.packetType = CMD_STATUS; // Используем существующую команду
+        PacketStatus packetBase; // конструктор автоматически установит packetType = CMD_STATUS
         // Создаем временную структуру с системной информацией
         struct SystemInfo {
             uint32_t uptime;
@@ -2332,8 +2323,7 @@ private:
             addLog("Got CMD_PING: smoothedRssi " + String(smoothedRssi) + "dBm");
             
             // 🚀 FIX: Send PONG response to PING
-            PacketCommand pong{};
-            pong.packetType = CMD_PONG;            
+            PacketPong pong{}; // конструктор автоматически установит packetType = CMD_PONG
             loraComm->sendPacketBase(senderId, pong, nullptr, false);
             addLog("📥 Received PING from " + String(senderId) + ", sent PONG response");
         }
@@ -2645,22 +2635,19 @@ private:
             break;
         case CMD_INFO_ENGINE:
         {
-            PacketInfoEngine info{};
-            info.packetType = CMD_INFO_ENGINE;
+            PacketInfoEngine info{}; // конструктор автоматически установит packetType = CMD_INFO_ENGINE
             loraComm->sendPacketBase(senderId, info, nullptr);
             break;
         }
         case CMD_CONFIG:
         {
-            PacketConfig cfg{};
-            cfg.packetType = CMD_CONFIG;
+            PacketConfig cfg{}; // конструктор автоматически установит packetType = CMD_CONFIG
             loraComm->sendPacketBase(senderId, cfg, nullptr);
             break;
         }
         case CMD_NAV:
         {
-            PacketNav nav{};
-            nav.packetType = CMD_NAV;
+            PacketNav nav{}; // конструктор автоматически установит packetType = CMD_NAV
             loraComm->sendPacketBase(senderId, nav, nullptr);
             break;
         }

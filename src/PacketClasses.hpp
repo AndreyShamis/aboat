@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <type_traits>
+#include "../include/settings.h"
 
 // ---------------- CRC16-CCITT (полином 0x1021) ----------------
 static uint16_t calcCRC16(const uint8_t *data, size_t len)
@@ -127,9 +128,19 @@ class PacketAsaRequest : public PacketBase
 {
 public:
     uint8_t profileIndex;
+    
+    PacketAsaRequest() : profileIndex(0) {
+        packetType = CMD_REQUEST_ASA;
+        payloadLen = sizeof(profileIndex);
+    }
 };
 class PacketAsaApprove : public PacketAsaRequest
 {
+public:
+    PacketAsaApprove() {
+        packetType = CMD_REPOSNCE_ASA; // Исправляем тип пакета
+        // payloadLen наследуется от PacketAsaRequest
+    }
 };
 
 // Пакет-команда: cmdId + произв.число аргументов
@@ -139,6 +150,12 @@ public:
     uint8_t cmdId;         // из CommandID
     uint8_t argCount;      // реально используемых args
     int8_t args[MAX_ARGS]; // каждый –128…127
+    
+    PacketCommand() : cmdId(0), argCount(0) {
+        packetType = CMD_COMMAND_STRING;
+        payloadLen = sizeof(cmdId) + sizeof(argCount) + sizeof(args);
+        for(int i = 0; i < MAX_ARGS; i++) args[i] = 0;
+    }
 };
 
 // Телеметрия: пример – скорость, курс, уровень батареи
@@ -148,6 +165,11 @@ public:
     uint8_t speed;     // 0–255
     uint8_t course;    // 0–179 (0–359°/2)
     uint8_t battLevel; // 0–100%
+    
+    PacketTelemetry() : speed(0), course(0), battLevel(0) {
+        packetType = CMD_TELEMETRY_FRAGMENT;
+        payloadLen = sizeof(speed) + sizeof(course) + sizeof(battLevel);
+    }
 };
 
 // Инфо о двигателе: RPM и температура
@@ -156,6 +178,11 @@ class PacketInfoEngine : public PacketBase
 public:
     int16_t rpm; // 0–20000
     int8_t temp; // –40…85
+    
+    PacketInfoEngine() : rpm(0), temp(0) {
+        packetType = CMD_INFO_ENGINE;
+        payloadLen = sizeof(rpm) + sizeof(temp);
+    }
 };
 
 
@@ -164,6 +191,11 @@ struct PacketRssiReport : PacketBase
 public:
     float rawRssi = 0;
     float smoothedRssi = 0;
+    
+    PacketRssiReport() : rawRssi(0.0f), smoothedRssi(0.0f) {
+        packetType = CMD_RSSI_REPORT;
+        payloadLen = sizeof(rawRssi) + sizeof(smoothedRssi);
+    }
 };
 
 
@@ -172,6 +204,11 @@ class PacketStatus : public PacketBase
 {
 public:
     uint8_t statusFlags; // бит0=OK,1=LowBatt,2=SensorErr…
+    
+    PacketStatus() : statusFlags(0) {
+        packetType = CMD_STATUS;
+        payloadLen = sizeof(statusFlags);
+    }
 };
 // static_assert(sizeof(PacketStatus) == HEADER_SIZE + 1,
 //               "PacketStatus size");
@@ -181,6 +218,11 @@ class PacketAck : public PacketBase
 {
 public:
     PacketId_t ackedId; // packetId того, что подтверждаем (унифицированный тип)
+    
+    PacketAck() : ackedId(0) {
+        packetType = CMD_ACK;
+        payloadLen = sizeof(ackedId);
+    }
 };
 
 // Агрегированное подтверждение (BULK ACK) - до 10 ACK в одном пакете
@@ -253,6 +295,11 @@ class PacketConfig : public PacketBase
 public:
     uint8_t paramId;
     int8_t value;
+    
+    PacketConfig() : paramId(0), value(0) {
+        packetType = CMD_CONFIG;
+        payloadLen = sizeof(paramId) + sizeof(value);
+    }
 };
 
 // Навигация: GPS
@@ -262,36 +309,73 @@ public:
     int32_t lat;   // 1e-7°
     int32_t lon;   // 1e-7°
     uint16_t hdop; // HDOP×100
+    
+    PacketNav() : lat(0), lon(0), hdop(0) {
+        packetType = CMD_NAV;
+        payloadLen = sizeof(lat) + sizeof(lon) + sizeof(hdop);
+    }
 };
 
 class PacketHeartbeat : public PacketBase
 {
 public:
     uint32_t count; // произвольный счётчик
+    
+    PacketHeartbeat() : count(0) {
+        packetType = CMD_PING; // или другой подходящий тип для heartbeat
+        payloadLen = sizeof(count);
+    }
+};
+
+// Отдельные классы для PING и PONG
+class PacketPing : public PacketBase
+{
+public:
+    PacketPing() {
+        packetType = CMD_PING;
+        payloadLen = 0; // PING не содержит данных
+    }
+};
+
+class PacketPong : public PacketBase
+{
+public:
+    PacketPong() {
+        packetType = CMD_PONG;
+        payloadLen = 0; // PONG не содержит данных
+    }
+};
+
+// Пакет для запроса информации
+class PacketRequestInfo : public PacketBase
+{
+public:
+    uint8_t requestType; // тип запрашиваемой информации
+    
+    PacketRequestInfo() : requestType(0) {
+        packetType = CMD_REQUEST_INFO;
+        payloadLen = sizeof(requestType);
+    }
+};
+
+// Пакет для ответов на команды
+class PacketCommandResponse : public PacketBase
+{
+public:
+    PacketCommandResponse() {
+        packetType = CMD_COMMAND_RESPONSE;
+        payloadLen = 0; // размер будет установлен при отправке
+    }
+};
+
+// Пакет для фрагментов телеметрии (JSON данные)
+class PacketTelemetryFragment : public PacketBase
+{
+public:
+    PacketTelemetryFragment() {
+        packetType = CMD_TELEMETRY_FRAGMENT;
+        payloadLen = 0; // размер будет установлен при отправке
+    }
 };
 
 #pragma pack(pop)
-// ----------------- Сериализация / Десериализация -----------------
-template <typename T>
-struct PacketSerializer
-{
-    // Копируем объект + дописываем CRC16
-    static size_t serialize(const T &pkt, uint8_t *buf)
-    {
-        size_t pktSize = sizeof(T);
-        memcpy(buf, &pkt, pktSize);
-        uint16_t crc = calcCRC16(buf, pktSize);
-        buf[pktSize + 0] = uint8_t(crc >> 8);
-        buf[pktSize + 1] = uint8_t(crc & 0xFF);
-        return pktSize + CRC_SIZE;
-    }
-    // Проверяем CRC и возвращаем true, если корректен
-    static bool validate(const uint8_t *buf, size_t totalLen)
-    {
-        if (totalLen < CRC_SIZE)
-            return false;
-        size_t pktSize = totalLen - CRC_SIZE;
-        uint16_t recvCrc = (uint16_t(buf[pktSize]) << 8) | buf[pktSize + 1];
-        return recvCrc == calcCRC16(buf, pktSize);
-    }
-};
