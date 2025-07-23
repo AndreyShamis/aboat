@@ -73,7 +73,7 @@ inline String PacketBaseToString(const PacketBase& base) {
 }
 // static_assert(sizeof(PacketBase) == HEADER_SIZE, "PacketBase size");
 
-String LoRaPacketToStr(const LoRaPacket &pkt)
+inline String LoRaPacketToStr(const LoRaPacket &pkt)
 {
     String s;
     s += "[" + String(pkt.senderId) + "->" + String(pkt.receiverId) + "], T=[" + String((char)pkt.packetType);
@@ -111,7 +111,7 @@ enum CommandID : uint8_t
     CMD_HEARTBEAT = 7,
     // … добавьте свои
 };
-bool parseAsaRequest(const uint8_t *buf, size_t len, uint8_t &profileIndex)
+inline bool parseAsaRequest(const uint8_t *buf, size_t len, uint8_t &profileIndex)
 {
     if (len != sizeof(uint8_t))
         return false;

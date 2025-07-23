@@ -33,6 +33,9 @@
 #include "BoatSettings.hpp"
 #include "DataPacket.hpp"
 
+// Forward declarations
+class BoatCommandHandler;
+
 using namespace ArduinoJson;
 
 static constexpr unsigned long CHANNEL_PRINT_INTERVAL = 2000;
@@ -47,9 +50,10 @@ static constexpr unsigned long MANUAL_PROFILE_BLOCK_TIME = 30000; // 30 seconds 
 static unsigned long lastChannelPrint = 0;
 static unsigned long lastControlUpdate = 0;
 
-
 class Boat : LogInterface
 {
+    // Allow BoatCommandHandler access to private members
+    friend class BoatCommandHandler;
 public:
     IMUModule imu;
     BatteryMonitor battery;
@@ -82,6 +86,9 @@ public:
     unsigned long lastPacketReceived = 0; // обновляется при каждом принятом пакете
     unsigned long asaLastSwitchTime = 0;
 
+    // Command handler instance
+    BoatCommandHandler* commandHandler;
+
     // Unified packet handlers for simple logging
     void onTelemetry(const PacketTelemetry &tel) { addLog("Received telemetry fragment: len=" + String(tel.payloadLen)); }
     void onInfoEngine(const PacketInfoEngine &info) { addLog("InfoEngine packet received"); }
@@ -94,6 +101,7 @@ public:
     Boat() : imu(this), sensor(0x48), gnss(Serial2)
     {
         loraComm = new LoRaCore(BOAT_DEVICE_ID, this);
+        commandHandler = nullptr;  // Will be initialized in setup()
         // Создаем мьютекс для потокобезопасного логирования
         logMutex = xSemaphoreCreateMutex();
         if (logMutex == nullptr){Serial.println("ERROR: Failed to create log mutex!");}
@@ -101,8 +109,14 @@ public:
     ~Boat()
     {
         delete loraComm;
+        cleanupCommandHandler();
         if (logMutex != nullptr){ vSemaphoreDelete(logMutex);}
     }
+
+    // Helper methods for command handler initialization
+    void initializeCommandHandler();
+    void cleanupCommandHandler();
+    void registerCommandHandlers();
 
     // Helper function to register command with response
     void registerCommandWithResponse(const String& cmd, std::function<String(const String&)> handler)
@@ -112,76 +126,14 @@ public:
             sendResponseToMissionControl(response);
         });
     }
-    // Helper function for LoRa profile management
-    String handleLoRaProfileCommand(const String& arg)
-    {
-        String response = "L:";
-        if (arg == "S" || arg == "status") {
-            String status = "Profile:" + String(loraComm->getCurrentProfileIndex()) + 
-                   ",RSSI:" + String(smoothedRssi) + "dBm" +
-                   ",Adaptive:" + String(allowAdaptiveLoraSwitch ? "ON" : "OFF");
-            
-            // Add manual block status if active
-            unsigned long timeSinceManual = millis() - lastManualProfileChange;
-            if (timeSinceManual < MANUAL_PROFILE_BLOCK_TIME) {
-                unsigned long remainingBlockTime = (MANUAL_PROFILE_BLOCK_TIME - timeSinceManual) / 1000;
-                status += ",ManualBlock:" + String(remainingBlockTime) + "s";
-            }
-            
-            addLog("[LORA] " + status);
-            response += status;
-        } else if (arg.startsWith("P") || arg.startsWith("profile:")) {
-            String profileStr = arg.startsWith("profile:") ? arg.substring(8) : arg.substring(1);
-            int profileIndex = profileStr.toInt();
-            response += applyLoRaProfile(profileIndex);
-        } else if (arg == "adapt") {
-            adaptiveLoraUpdate();
-            response += "Adaptive LoRa triggered";
-        } else if (arg.startsWith("A:")) {
-            response += handleAdaptiveControl(arg.substring(2));
-        } else if (arg == "unblock" || arg == "U") {
-            lastManualProfileChange = 0; // Reset manual block timer
-            response += "Manual profile block reset, adaptive switching re-enabled";
-        } else if (arg.length() > 0 && arg[0] >= '0' && arg[0] <= '9') {
-            int profileIndex = arg.toInt();
-            response += applyLoRaProfile(profileIndex);
-        } else {
-            response += "Usage: L:[S|P<n>|<n>|adapt|A:0/1|U] - Current: Profile:" + String(loraComm->getCurrentProfileIndex()) + 
-                       ",RSSI:" + String(smoothedRssi) + "dBm";
-        }
-        return response;
-    }
-
-    String applyLoRaProfile(int profileIndex)
-    {
-        if (profileIndex >= 0 && profileIndex < LORA_PROFILE_COUNT) {
-            applyProfile(profileIndex);
-            lastManualProfileChange = millis(); // Block adaptive switching for some time
-            addLog("[LORA] Manually switched to profile " + String(profileIndex) + " - adaptive switching blocked for " + String(MANUAL_PROFILE_BLOCK_TIME/1000) + "s");
-            return "Profile changed to " + String(profileIndex);
-        } else {
-            return "Invalid profile index:" + String(profileIndex);
-        }
-    }
-
-    String handleAdaptiveControl(const String& adaptiveStr)
-    {
-        if (adaptiveStr == "0") {
-            allowAdaptiveLoraSwitch = false;
-            addLog("[LORA] Adaptive switching DISABLED by command");
-            return "Adaptive switching disabled";
-        } else if (adaptiveStr == "1") {
-            allowAdaptiveLoraSwitch = true;
-            addLog("[LORA] Adaptive switching ENABLED by command");
-            return "Adaptive switching enabled";
-        } else {
-            return "Invalid adaptive command (use A:0 or A:1)";
-        }
-    }
 
     void setup()
     {
         delay(3); // Задержка для отладки
+        
+        // Initialize command handler - must be done after include at end of file
+        initializeCommandHandler();
+        
         addLog("RAM: Free heap: " + String(ESP.getFreeHeap()) + " bytes");
         addLog("Flash: Sketch size:" + String(ESP.getSketchSize()) + " bytes / Free: " + String(ESP.getFreeSketchSpace()) + " bytes");
 
@@ -247,46 +199,14 @@ public:
         parser.registerCommand("P", [this](const String &arg) {
             oilPump.setSpeed(arg.toInt()); });
 
-        // LoRa commands with simplified registration
-        registerCommandWithResponse("L", [this](const String &arg) {
-            return handleLoRaProfileCommand(arg);
-        });
-
-        // Diagnostic commands with simplified registration
-        registerCommandWithResponse("D", [this](const String &arg) {
-            return handleDiagnosticCommand(arg);
-        });
-
-        // Navigation commands with simplified registration
-        registerCommandWithResponse("N", [this](const String &arg) {
-            return handleNavigationCommand(arg);
-        });
-
-        // Waypoint commands with simplified registration
-        registerCommandWithResponse("W", [this](const String &arg) {
-            return handleWaypointCommand(arg);
-        });
-
-        // Time commands with simplified registration
-        registerCommandWithResponse("T", [this](const String &arg) {
-            return handleTimeCommand(arg);
-        });
-
-        // Data mode commands with simplified registration
-        registerCommandWithResponse("DM", [this](const String &arg) {
-            return handleDataModeCommand(arg);
-        });
+        // Register command handlers through helper method
+        registerCommandHandlers();
 
         // 📶 RSSI Report command
         parser.registerCommand("RSSI", [this](const String &arg)
                                {
                                    sendRssiReport(MISSION_CONTROL_ID);
                                    addLog("📶 RSSI report sent on request"); });
-
-        // 🧭 IMU commands with simplified registration
-        registerCommandWithResponse("I", [this](const String &arg) {
-            return handleIMUCommand(arg);
-        });
 
         addLog("Commands registered: M (motor), E (engine), R (rudder), P (oil pump), D (diagnostics), L (LoRa - supports direct profile numbers + A:0/A:1 adaptive control + U/unblock to reset manual block), N (navigation), W (waypoints), T (time), DM (data mode - structured data commands), RSSI (signal report), I (IMU - orientation, calibration, diagnostics)");
 
@@ -351,324 +271,6 @@ public:
         {
             addLog("🕒 GPS time not yet available, will sync when ready");
         }
-    }
-
-    // Helper for structured data commands
-    String handleStructuredDataCommand(const String& command)
-    {
-        if (!useStructuredData) {
-            return "structured mode disabled";
-        }
-        
-        if (command == "H" || command == "heartbeat") {
-            sendStructuredHeartbeat();
-            return "structured heartbeat sent";
-        } else if (command == "F" || command == "full") {
-            sendStructuredFullStatus();
-            return "full structured status sent";
-        } else if (command == "G" || command == "gps") {
-            sendStructuredGPS();
-            return "GPS data sent";
-        } else if (command == "M" || command == "motors") {
-            sendStructuredMotors();
-            return "motor data sent";
-        } else if (command == "SENS" || command == "sensors") {
-            sendStructuredSensors();
-            return "sensor data sent";
-        } else if (command == "L" || command == "lora") {
-            sendStructuredLoRaStatus();
-            return "LoRa status sent";
-        } else if (command == "N" || command == "navigation") {
-            sendStructuredNavigation();
-            return "navigation data sent";
-        } else if (command == "SYS" || command == "system") {
-            sendStructuredSystemInfo();
-            return "system info sent";
-        }
-        
-        return "unknown structured command";
-    }
-
-    // Helper function for diagnostic commands
-    String handleDiagnosticCommand(const String& arg)
-    {
-        String response = "D:";
-        if (arg == "S") {
-            response += "Safety:" + safetyMonitor.getStatusString();
-        } else if (arg == "P") {
-            response += "Performance:avg=" + String(performanceMetrics.getAverageKeepTime()) + 
-                       "ms,max=" + String(performanceMetrics.maxKeepDuration) + "ms";
-        } else if (arg == "T") {
-            response += "Temps:M1=" + String(temps.get(MOTOR1)) + 
-                       "C,M2=" + String(temps.get(MOTOR2)) + "C";
-        } else if (arg == "R") {
-            performanceMetrics.reset();
-            response += "Performance metrics reset";
-        } else if (arg == "full" || arg.isEmpty()) {
-            response += buildFullDiagnostic();
-        } else if (arg == "extended" || arg == "ext") {
-            response += buildExtendedDiagnostic();
-        } else if (arg == "stack" || arg == "st") {
-            response += "Stack Report:\n" + stackMonitor.getReport();
-        } else {
-            response += "Unknown diagnostic command:" + arg;
-        }
-        return response;
-    }
-
-    String buildFullDiagnostic()
-    {
-        String safetyInfo = safetyMonitor.getStatusString();
-        if (safetyInfo.length() > 30) safetyInfo = safetyInfo.substring(0, 30) + "...";
-        
-        return "Safety:" + safetyInfo + 
-               ";Perf:avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms" +
-               ";Temps:M1=" + String(temps.get(MOTOR1), 1) + "C,M2=" + String(temps.get(MOTOR2), 1) + "C" +
-               ";GPS:" + (gnss.hasValidFix() ? "OK" : "NO_FIX") +
-               ";Heap:" + String(ESP.getFreeHeap());
-    }
-
-    String buildExtendedDiagnostic()
-    {
-        String extDiag = "System:OK;";
-        extDiag += "Uptime:" + String(millis()/1000) + "s;";
-        extDiag += "FreeHeap:" + String(ESP.getFreeHeap()) + ";";
-        extDiag += "MinFreeHeap:" + String(ESP.getFlashChipSize()) + ";";
-        extDiag += "FlashSize:" + String(ESP.getFlashChipSize()) + ";";
-        extDiag += "CPUFreq:" + String(ESP.getCpuFreqMHz()) + "MHz;";
-        extDiag += "ChipModel:" + String(ESP.getChipModel()) + ";";
-        extDiag += "TempSensors:" + String(temps.getSensorCount()) + ";";
-        extDiag += "WiFiStatus:" + String(WiFi.status()) + ";";
-        extDiag += "LoRaProfile:" + String(loraComm->getCurrentProfileIndex()) + ";";
-        extDiag += "Safety:" + safetyMonitor.getStatusString() + ";";
-        extDiag += "Performance:avg=" + String(performanceMetrics.getAverageKeepTime()) + "ms;";
-        extDiag += "Stack:" + stackMonitor.getCompactStatus();
-        
-        addLog("[DIAG] Extended diagnostic (" + String(extDiag.length()) + " bytes): " + extDiag);
-        return extDiag;
-    }
-
-    // Helper function for navigation commands
-    String handleNavigationCommand(const String& arg)
-    {
-        String response = "N:";
-        if (arg == "M" || arg == "manual") {
-            autoNav.setMode(AutoNavigation::MANUAL);
-            addLog("[NAV] Switched to manual mode");
-            response += "Manual mode activated";
-        } else if (arg == "R" || arg == "home") {
-            autoNav.setMode(AutoNavigation::RETURN_TO_HOME);
-            addLog("[NAV] Return to home initiated");
-            response += "Return to home mode activated";
-        } else if (arg == "S" || arg == "station") {
-            autoNav.setMode(AutoNavigation::STATION_KEEPING);
-            addLog("[NAV] Station keeping mode");
-            response += "Station keeping mode activated";
-        } else if (arg == "H" || arg == "sethome") {
-            response += handleSetHome();
-        } else if (arg.startsWith("start:")) {
-            response += handleNavigationStart(arg.substring(6));
-        } else if (arg == "stop") {
-            autoNav.setMode(AutoNavigation::MANUAL);
-            response += "Navigation stopped";
-        } else if (arg == "pause") {
-            autoNav.pause();
-            response += "Navigation paused";
-        } else if (arg == "resume") {
-            autoNav.resume();
-            response += "Navigation resumed";
-        } else if (arg.startsWith("mode:")) {
-            response += handleNavigationMode(arg.substring(5));
-        } else {
-            String status = autoNav.getStatusString();
-            addLog("[NAV] Status: " + status);
-            response += "Status:" + status;
-        }
-        return response;
-    }
-
-    String handleSetHome()
-    {
-        if (gnss.hasValidFix()) {
-            autoNav.setHome(gnss.getLatitude(), gnss.getLongitude());
-            String homePos = String(gnss.getLatitude(), 6) + "," + String(gnss.getLongitude(), 6);
-            addLog("[NAV] Home position set: " + homePos);
-            return "Home set at " + homePos;
-        } else {
-            addLog("[NAV] Cannot set home - no GPS fix");
-            return "Error: No GPS fix available";
-        }
-    }
-
-    String handleNavigationStart(const String& coords)
-    {
-        int commaIndex = coords.indexOf(',');
-        if (commaIndex > 0) {
-            float lat = coords.substring(0, commaIndex).toFloat();
-            float lon = coords.substring(commaIndex + 1).toFloat();
-            autoNav.setTarget(lat, lon);
-            autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
-            addLog("[NAV] Navigation started to: " + String(lat, 6) + "," + String(lon, 6));
-            return "Navigation started to " + String(lat, 6) + "," + String(lon, 6);
-        } else {
-            return "Error: Invalid coordinates format";
-        }
-    }
-
-    String handleNavigationMode(const String& mode)
-    {
-        if (mode == "manual") autoNav.setMode(AutoNavigation::MANUAL);
-        else if (mode == "waypoint") autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
-        else if (mode == "home") autoNav.setMode(AutoNavigation::RETURN_TO_HOME);
-        else if (mode == "station") autoNav.setMode(AutoNavigation::STATION_KEEPING);
-        return "Mode set to " + mode;
-    }
-
-    // Helper function for waypoint commands
-    String handleWaypointCommand(const String& arg)
-    {
-        String response = "W:";
-        if (arg.startsWith("A") || arg.startsWith("add:")) {
-            String coords = arg.startsWith("add:") ? arg.substring(4) : arg.substring(1);
-            int commaIndex = coords.indexOf(',');
-            if (commaIndex > 0) {
-                float lat = coords.substring(0, commaIndex).toFloat();
-                float lon = coords.substring(commaIndex + 1).toFloat();
-                autoNav.addWaypoint(lat, lon);
-                addLog("[NAV] Waypoint added: " + String(lat, 6) + "," + String(lon, 6));
-                response += "Waypoint added:" + String(lat, 6) + "," + String(lon, 6);
-            } else {
-                response += "Error: Invalid waypoint format";
-            }
-        } else if (arg == "S" || arg == "start") {
-            autoNav.setMode(AutoNavigation::WAYPOINT_FOLLOWING);
-            addLog("[NAV] Waypoint following started");
-            response += "Waypoint following started";
-        } else if (arg == "C" || arg == "clear") {
-            autoNav.clearWaypoints();
-            addLog("[NAV] Waypoints cleared");
-            response += "Waypoints cleared";
-        } else if (arg == "status") {
-            response += "Web interface active,clients:" + String(WiFi.softAPgetStationNum());
-        } else if (arg == "update") {
-            response += "Web interface updated";
-        } else {
-            response += "Waypoint count:" + String(autoNav.getWaypointCount());
-        }
-        return response;
-    }
-
-    // Helper function for time commands
-    String handleTimeCommand(const String& arg)
-    {
-        String response = "T:";
-        if (arg == "S" || arg == "sync") {
-            if (gnss.isTimeUpdated()) {
-                gnss.syncSystemTimeFromGPS();
-                time_t now = time(nullptr);
-                addLog("🕒 GPS time sync forced: " + String(now));
-                response += "GPS time synced:" + String(now);
-            } else {
-                addLog("🕒 GPS time not available for sync");
-                response += "GPS time not available";
-            }
-        } else if (arg == "status" || arg.isEmpty()) {
-            time_t now = time(nullptr);
-            bool synced = (now > 1600000000);
-            String timeStr = this->timeStr();
-            String status = "Time:" + timeStr + 
-                   ",Synced:" + String(synced ? "YES" : "NO") + 
-                   ",GPS_Updated:" + String(gnss.isTimeUpdated() ? "YES" : "NO");
-            addLog("🕒 " + status);
-            response += status;
-        } else if (arg == "reset") {
-            struct timeval tv = {0, 0};
-            settimeofday(&tv, NULL);
-            addLog("🕒 System time reset");
-            response += "System time reset";
-        } else {
-            response += "Unknown time command:" + arg;
-        }
-        return response;
-    }
-
-    // Helper function for data mode commands
-    String handleDataModeCommand(const String& arg)
-    {
-        String response = "DM:";
-        if (arg == "S" || arg == "structured") {
-            useStructuredData = true;
-            addLog("📦 Switched to structured data transmission");
-            response += "structured data enabled";
-        } else if (arg == "J" || arg == "json") {
-            useStructuredData = false;
-            addLog("📄 Switched to JSON data transmission");
-            response += "JSON data enabled";
-        } else if (arg == "?") {
-            response += String(useStructuredData ? "structured" : "json") + 
-                       ", HB:" + String((millis() - lastHeartbeatSent)/1000) + "s ago" +
-                       ", Full:" + String((millis() - lastFullStatusSent)/1000) + "s ago";
-        } else {
-            // Handle structured data sub-commands
-            String subResponse = handleStructuredDataCommand(arg);
-            if (subResponse == "unknown structured command") {
-                response += "Usage: DM:[S|J|H|F|G|M|SENS|L|N|SYS|?] (Structured/Json/Heartbeat/Full/Gps/Motors/Sensors/LoRa/Nav/System/status)";
-            } else {
-                response += subResponse;
-            }
-        }
-        return response;
-    }
-
-    // Helper function for IMU commands
-    String handleIMUCommand(const String& arg)
-    {
-        String response = "I:";
-        if (arg == "S" || arg == "status" || arg.isEmpty()) {
-            response += imu.getOrientationString();
-            addLog("[IMU] " + imu.getOrientationString());
-        } else if (arg == "C" || arg == "calibrate") {
-            if (imu.isCalibrating()) {
-                response += "calibration already in progress";
-            } else {
-                imu.startGyroCalibration(1000);
-                response += "gyro calibration started (1000 samples)";
-                addLog("[IMU] 🔧 Gyro calibration started by command");
-            }
-        } else if (arg == "R" || arg == "reset") {
-            imu.reset();
-            response += "AHRS filter reset";
-            addLog("[IMU] 🔄 AHRS filter reset by command");
-        } else if (arg == "D" || arg == "diag") {
-            String diagInfo = imu.getDiagnosticInfo();
-            addLog("[IMU] " + diagInfo);
-            response += diagInfo.substring(6); // Remove "[IMU] " prefix
-        } else if (arg == "F" || arg == "force") {
-            if (imu.forceUpdate()) {
-                response += "forced update completed: " + imu.getOrientationString();
-            } else {
-                response += "forced update failed";
-            }
-        } else if (arg.startsWith("freq:") || arg.startsWith("F:")) {
-            String freqStr = arg.startsWith("freq:") ? arg.substring(5) : arg.substring(2);
-            int frequency = freqStr.toInt();
-            if (frequency >= 10 && frequency <= 200) {
-                unsigned long interval = 1000 / frequency;
-                imu.setUpdateInterval(interval);
-                response += "update frequency set to " + String(frequency) + "Hz";
-                addLog("[IMU] Update frequency changed to " + String(frequency) + "Hz");
-            } else {
-                response += "invalid frequency (valid range: 10-200 Hz)";
-            }
-        } else if (arg == "raw") {
-            const IMUModule::RawData& raw = imu.getRawData();
-            response += "Accel[" + String(raw.accelX, 2) + "," + String(raw.accelY, 2) + "," + String(raw.accelZ, 2) + "]";
-            response += " Gyro[" + String(raw.gyroX, 1) + "," + String(raw.gyroY, 1) + "," + String(raw.gyroZ, 1) + "]";
-            response += " Mag[" + String(raw.magX, 1) + "," + String(raw.magY, 1) + "," + String(raw.magZ, 1) + "]";
-        } else {
-            response += "Usage: I:[S|C|R|D|F|freq:N|raw] (Status/Calibrate/Reset/Diagnostic/Force_update/Frequency/Raw_data)";
-        }
-        return response;
     }
 
     // Helper function for mission control deactivation logic

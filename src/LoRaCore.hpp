@@ -1097,10 +1097,10 @@ public:
 
 };
 
-TaskHandle_t LoRaCore::receiverTaskHandle = nullptr;
+inline TaskHandle_t LoRaCore::receiverTaskHandle = nullptr;
 
 // ENHANCED PROFILE APPLICATION
-bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
+inline bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
 {
     if (profileIndex >= LORA_PROFILE_COUNT)
     {
@@ -1247,7 +1247,7 @@ bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
     return false;
 }
 
-String LoRaCore::getCurrentProfileInfo() const
+inline String LoRaCore::getCurrentProfileInfo() const
 {
     if (_mode == RadioMode::LORA)
     {

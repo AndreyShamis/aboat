@@ -330,4 +330,4 @@ public:
 };
 
 // Статические переменные
-uint16_t StructuredDataManager::messageIdCounter = 1;
+inline uint16_t StructuredDataManager::messageIdCounter = 1;

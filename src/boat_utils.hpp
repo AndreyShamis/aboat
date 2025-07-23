@@ -156,18 +156,18 @@ namespace BoatUtils
     }
 
     // Конвертация углов
-    float degreesToRadians(float degrees)
+    inline float degreesToRadians(float degrees)
     {
         return degrees * PI / 180.0f;
     }
 
-    float radiansToDegrees(float radians)
+    inline float radiansToDegrees(float radians)
     {
         return radians * 180.0f / PI;
     }
 
     // Нормализация угла в диапазон [-180, 180]
-    float normalizeAngle(float angle)
+    inline float normalizeAngle(float angle)
     {
         while (angle > 180.0f)
             angle -= 360.0f;
@@ -177,37 +177,37 @@ namespace BoatUtils
     }
 
     // Проверка валидности значений датчиков
-    bool isValidTemperature(float temp)
+    inline bool isValidTemperature(float temp)
     {
         return temp > -50.0f && temp < 150.0f && !isnan(temp);
     }
 
-    bool isValidVoltage(float voltage)
+    inline bool isValidVoltage(float voltage)
     {
         return voltage > 5.0f && voltage < 30.0f && !isnan(voltage);
     }
 
-    bool isValidRSSI(float rssi)
+    inline bool isValidRSSI(float rssi)
     {
         return rssi >= -150.0f && rssi <= 0.0f && !isnan(rssi);
     }
 
     // Форматирование строк для отладки
-    String formatFloat(float value, int decimals = 2)
+    inline String formatFloat(float value, int decimals = 2)
     {
         if (isnan(value))
             return "NaN";
         return String(value, decimals);
     }
 
-    String formatTemperature(float temp)
+    inline String formatTemperature(float temp)
     {
         if (!isValidTemperature(temp))
             return "INVALID";
         return formatFloat(temp, 1) + "°C";
     }
 
-    String formatVoltage(float voltage)
+    inline String formatVoltage(float voltage)
     {
         if (!isValidVoltage(voltage))
             return "INVALID";
@@ -215,7 +215,7 @@ namespace BoatUtils
     }
 
     // Расчет времени работы
-    String formatUptime(unsigned long millis)
+    inline String formatUptime(unsigned long millis)
     {
         unsigned long seconds = millis / 1000;
         unsigned long minutes = seconds / 60;
@@ -235,7 +235,7 @@ namespace BoatUtils
     }
 
     // Форматирование времени с миллисекундами
-    String formatTimeWithMillis(unsigned long currentMillis = 0)
+    inline String formatTimeWithMillis(unsigned long currentMillis = 0)
     {
         if (currentMillis == 0)
         {
@@ -269,13 +269,13 @@ namespace BoatUtils
     }
 
     // Создание timestamp для логирования
-    String createTimestamp()
+    inline String createTimestamp()
     {
         return formatTimeWithMillis();
     }
 
     // Расчет расстояния между GPS координатами (в метрах)
-    float calculateDistance(float lat1, float lon1, float lat2, float lon2)
+    inline float calculateDistance(float lat1, float lon1, float lat2, float lon2)
     {
         const float R = 6371000.0f; // Радиус Земли в метрах
         float dLat = degreesToRadians(lat2 - lat1);
@@ -290,7 +290,7 @@ namespace BoatUtils
     }
 
     // Расчет пеленга между GPS координатами (в градусах)
-    float calculateBearing(float lat1, float lon1, float lat2, float lon2)
+    inline float calculateBearing(float lat1, float lon1, float lat2, float lon2)
     {
         float dLon = degreesToRadians(lon2 - lon1);
         float lat1_rad = degreesToRadians(lat1);
