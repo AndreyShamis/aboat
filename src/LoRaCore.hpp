@@ -114,13 +114,8 @@ private:
     // Система агрегированных ACK
     PacketBulkAck pendingBulkAck;
     unsigned long lastBulkAckTime = 0;
-    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 250;
-    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 100;
-
-    // Получить следующий ID пакета (только для внутреннего использования)
-    PacketId_t getNextPacketId() {
-        return ++nextPacketId;
-    }
+    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 600;
+    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 250;
 
     void putToLogBuffer(const String& msg)
     {
@@ -152,7 +147,7 @@ private:
             float packetTime = (preambleTime + payloadSymbols * symbolTime) * 1000; // в мс
 
             // Адаптивный таймаут: 3-4 времени передачи пакета + буфер
-            currentRetryTimeoutMs = std::max(1500U, (uint32_t)(packetTime * 3.5f + 500));
+            currentRetryTimeoutMs = std::max(8500U, (uint32_t)(packetTime * 3.5f + 1000));
             if (currentSF <= 7) // Количество повторов зависит от SF (чем выше SF, тем больше повторов)
             {
                 currentMaxRetries = 2; // Быстрые профили
@@ -175,7 +170,7 @@ private:
         {
             // Для FSK/GFSK рассчитываем на основе битрейта/ Время передачи 50-байтового пакета при текущем битрейте
             float packetTime = (50.0f * 8.0f * 1000.0f) / currentBitrate; // в мс
-            currentRetryTimeoutMs = std::max(800U, (uint32_t)(packetTime * 2.5f + 300)); // Адаптивный таймаут: 2-3 времени передачи + буфер
+            currentRetryTimeoutMs = std::max(1500U, (uint32_t)(packetTime * 2.5f + 600)); // Адаптивный таймаут: 2-3 времени передачи + буфер
             if (currentBitrate >= 19200) // FSK быстрее, меньше повторов
             {
                 currentMaxRetries = 2; // Высокоскоростные FSK
@@ -613,8 +608,7 @@ private:
             LoRaPacket pkt = {};
             if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(5)) == pdTRUE)
             {
-                // КРИТИЧНО: Проверяем флаг активного приема
-                // Если идет прием - НЕ ПЕРЕДАЕМ, возвращаем пакет в очередь
+                // КРИТИЧНО: Проверяем флаг активного приема - Если идет прием - НЕ ПЕРЕДАЕМ, возвращаем пакет в очередь
                 if (receivingInProgress) {
                     // Возвращаем пакет в начало очереди для повторной попытки
                     xQueueSendToFront(outgoingQueue, &pkt, 0);
@@ -638,10 +632,16 @@ private:
                 radio.standby();
                 ssize_t len = offsetof(LoRaPacket, payload) + pkt.payloadLen;
                 
-                // Create a copy for transmission to prevent radio library from corrupting original
-                LoRaPacket txPkt = pkt;
                 
-                // Generate log BEFORE transmission using original packet
+                LoRaPacket txPkt = pkt;  // Create a copy for transmission to prevent radio library from corrupting original
+                
+                unsigned long t0 = millis();
+                int result = radio.transmit((uint8_t *)&txPkt, len); // Use copy for transmission
+                radio.startReceive();
+                if (radioSemaphore)
+                    xSemaphoreGive(radioSemaphore);
+                unsigned long txDuration = millis() - t0;
+
                 String payloadHex = "";
                 int safePayloadLen = (pkt.payloadLen > MAX_LORA_PAYLOAD) ? 0 : pkt.payloadLen;
                 for (int i = 0; i < safePayloadLen; i++)
@@ -654,15 +654,11 @@ private:
                     payloadHex = "❌CORRUPTED_LEN=" + String(pkt.payloadLen);
                 }
 
-                // Log packet details BEFORE transmission
-                snprintf(s, sizeof(s),"[TX:%d][L:%d]→[%u->%u], T=[%c/%d], id=%u, plLen=%u ", getCurrentProfileIndex(), (int)len, pkt.getSenderId(), pkt.getReceiverId(), pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
+                
+                snprintf(s, sizeof(s),"[TX:%d][L:%d]%lums→[%u->%u], T=[%c/%d], id=%u, plLen=%u ", getCurrentProfileIndex(), (int)len,txDuration, pkt.getSenderId(), pkt.getReceiverId(), pkt.packetType, pkt.packetType, pkt.packetId, pkt.payloadLen);
                 String fullLog = String(s) + ", pl=" + payloadHex;
                 putToLogBuffer(fullLog);
-                
-                unsigned long t0 = millis();
-                int result = radio.transmit((uint8_t *)&txPkt, len); // Use copy for transmission
-                unsigned long txDuration = millis() - t0;
-                
+
                 if (result != RADIOLIB_ERR_NONE) // Логируем только критические проблемы для ускорения
                 {
                     snprintf(s, sizeof(s), "❌TX Error: code=%d, id=%u, len=%d, duration=%lums", result, pkt.packetId, (int)len, txDuration);
@@ -673,12 +669,10 @@ private:
                 if (pkt.payloadLen != txPkt.payloadLen) {
                     char corruptionBuf[100];
                     snprintf(corruptionBuf, sizeof(corruptionBuf), "🚨 CORRUPTION: orig_len=%u, tx_len=%u", pkt.payloadLen, txPkt.payloadLen);
-                    Serial.println(corruptionBuf);
+                    putToLogBuffer(corruptionBuf);
                 }
 
-                radio.startReceive();
-                if (radioSemaphore)
-                    xSemaphoreGive(radioSemaphore);
+
             }
             uint32_t randomDelay = 19 + (esp_random() % 10);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
@@ -938,7 +932,7 @@ public:
         
         // Создаем копию базового пакета и автоматически присваиваем новый ID
         PacketBase modifiedBase = base;
-        modifiedBase.packetId = getNextPacketId();
+        modifiedBase.packetId = ++nextPacketId;
         
         LoRaPacket frame = {}; // Initialize to zero
         packBaseIntoLoRa(frame, myDeviceId, receiverId, modifiedBase, payload);

@@ -1514,7 +1514,7 @@ private:
         
         if (StructuredDataManager::createGPSPacket(bs.gps, packetBase, payload, payloadSize)) {
             loraComm->sendPacketBase(MISSION_CONTROL_ID, packetBase, payload);
-            addLog("� GPS data sent: " + String(payloadSize) + " bytes");
+            addLog(" - GPS data sent: " + String(payloadSize) + " bytes");
         }
     }
     

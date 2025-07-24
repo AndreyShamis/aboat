@@ -557,7 +557,7 @@ public:
     {
         if (cmd.length() == 0) return;
         
-        addLog("[MC] 🚀 Processing command: " + cmd);
+        addLog("\n[MC] 🚀 Processing command: " + cmd);
         
         if (cmd.startsWith("D:")) {
             String param = cmd.substring(2);
@@ -734,6 +734,10 @@ public:
         if (Serial.available()) {
             String input = Serial.readStringUntil('\n');
             input.trim();
+            if(input == "") {
+                addLog("[MC] Ignoring empty input");
+                return; // Ignore empty input
+            }
             processSerialCommand(input);
         }
     }
