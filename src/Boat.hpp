@@ -24,7 +24,6 @@
 #include "SPIFFS.h"
 #include "LoRaCore.hpp"
 #include <Adafruit_PWMServoDriver.h>
-#include "PacketAsaExchange.hpp"
 #include "boat_utils.hpp"
 #include "auto_navigation.hpp"
 #include "IMUModule.hpp"

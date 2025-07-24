@@ -124,24 +124,28 @@ inline bool parseAsaRequest(const uint8_t *buf, size_t len, uint8_t &profileInde
 
 // Базовый заголовок любого пакета
 
-class PacketAsaRequest : public PacketBase
-{
-public:
+// Для ASA-запросов и подтверждений (структура одна, тип разный)
+struct PacketAsaExchange : public PacketBase {
     uint8_t profileIndex;
-    
-    PacketAsaRequest() : profileIndex(0) {
-        packetType = CMD_REQUEST_ASA;
+
+    PacketAsaExchange(CommandType type = CMD_REQUEST_ASA) {
+        packetType = type;
+        packetId = 0;
+        payloadLen = sizeof(profileIndex);
+        profileIndex = 0;
+    }
+
+    void setProfile(uint8_t index) {
+        profileIndex = index;
         payloadLen = sizeof(profileIndex);
     }
-};
-class PacketAsaApprove : public PacketAsaRequest
-{
-public:
-    PacketAsaApprove() {
-        packetType = CMD_REPOSNCE_ASA; // Исправляем тип пакета
-        // payloadLen наследуется от PacketAsaRequest
+
+    uint8_t getProfile() const {
+        return profileIndex;
     }
 };
+
+
 
 // Пакет-команда: cmdId + произв.число аргументов
 class PacketCommand : public PacketBase

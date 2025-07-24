@@ -6,9 +6,8 @@
 #include "settings.h"
 #include "LoRaCore.hpp"
 #include "wifi_manager.hpp"
-#include "PacketAsaExchange.hpp"
-#include "DataPacket.hpp"  // 🚀 NEW: Support for structured data
-#include "BoatSettings.hpp" // 🚀 NEW: Boat status structure
+#include "DataPacket.hpp"  // NEW: Support for structured data
+#include "BoatSettings.hpp" // NEW: Boat status structure
 
 // -----------------------------------------------------------------------------
 // MissionControl
@@ -79,28 +78,24 @@ public:
         if (millis() - lastBoatActivity > checkInterval && currentProfileIndex > 0)
         {
             unsigned long timeSinceActivity = (millis() - lastBoatActivity) / 1000;
-            addLog("⚠️ No boat activity for " + String(timeSinceActivity) + " seconds (threshold: " + 
-                   String(checkInterval / 1000) + "s). Degrading to profile 0 for maximum range.");
+            addLog("[MC][LORA]No boat activity for " + String(timeSinceActivity) + " seconds (threshold:" + String(checkInterval / 1000) + "s). Degrading to profile 0");
             
             currentProfileIndex = 0;
             const auto &profile = loraProfiles[currentProfileIndex];
 
-            PacketAsaApprove resp; // конструктор автоматически установит packetType = CMD_ACK_ASA
+            PacketAsaExchange resp(CMD_REPOSNCE_ASA);
             resp.profileIndex = currentProfileIndex;
             loraComm->sendPacketBase(BOAT_DEVICE_ID, resp, (const uint8_t*)&resp.profileIndex, false);
-            vTaskDelay(pdMS_TO_TICKS(1000));
+            vTaskDelay(pdMS_TO_TICKS(500)); vTaskDelay(pdMS_TO_TICKS(500)); vTaskDelay(pdMS_TO_TICKS(500));
             applyProfile(currentProfileIndex);
-
-            lastBoatActivity = millis(); // 🚀 FIX: Сбрасываем таймер активности лодки
-            
-            // 🚀 FIX: Сбрасываем флаги пингов
-            firstPingSent = false;
+            lastBoatActivity = millis();    // Сбрасываем таймер активности лодки
+            firstPingSent = false;          //  Сбрасываем флаги пингов
             secondPingSent = false;
             waitingForPong = false;
         }
         else
         {
-            // 🚀 NEW: Двойная стратегия пингов - 35 и 45 секунд
+            // Двойная стратегия пингов - 35 и 45 секунд
             unsigned long timeSinceLastActivity = millis() - lastBoatActivity;
             
             // Первый пинг на 35 секунде
@@ -109,8 +104,7 @@ public:
                 lastPingSent = millis();
                 waitingForPong = true;
                 firstPingSent = true;
-                addLog("[MC] 🔍 No boat activity for " + String(timeSinceLastActivity/1000) + 
-                       "s, sending FIRST PING to check connection");
+                addLog("[MC] 🔍 No boat activity for " + String(timeSinceLastActivity/1000) + "s, sending FIRST PING to check connection");
             }
             
             // Второй пинг на 45 секунде (если первый не получил ответ)
@@ -119,8 +113,7 @@ public:
                 lastPingSent = millis();
                 waitingForPong = true;
                 secondPingSent = true;
-                addLog("[MC] 🔍 No boat activity for " + String(timeSinceLastActivity/1000) + 
-                       "s, sending SECOND PING to check connection");
+                addLog("[MC] 🔍 No boat activity for " + String(timeSinceLastActivity/1000) + "s, sending SECOND PING to check connection");
             }
             
             // Если ждем понг больше 10 секунд - считаем лодку недоступной
@@ -130,7 +123,7 @@ public:
                 waitingForPong = false;
                 boatIsActive = false;
                 
-                // 🚀 FIX: Не сбрасываем флаги пингов, пусть система дойдет до 60 секунд
+                // Не сбрасываем флаги пингов, пусть система дойдет до 60 секунд
                 // и сделает деградацию профиля если лодка действительно недоступна
             }
             
@@ -150,23 +143,22 @@ public:
     {
         if (cmdStr.length() > MAX_LORA_PAYLOAD)
         {
-            addLog("[MC] ⚠️ Command too long (" + String(cmdStr.length()) +
-                   " bytes), truncating to " + String(MAX_LORA_PAYLOAD));
+            addLog("[MC] ⚠️ Command too long (" + String(cmdStr.length()) +" bytes), truncating to " + String(MAX_LORA_PAYLOAD));
         }
 
         size_t len = std::min<size_t>(cmdStr.length(), MAX_LORA_PAYLOAD);
 
-        // 👇 Локальный буфер, живёт до вызова sendPacketBase → безопасно
+        // Локальный буфер, живёт до вызова sendPacketBase → безопасно
         uint8_t tempBuf[MAX_LORA_PAYLOAD];
         memcpy(tempBuf, cmdStr.c_str(), len);
 
-        PacketCommand cmd{}; // конструктор автоматически установит packetType = CMD_COMMAND_STRING
+        PacketCommand cmd{}; // packetType = CMD_COMMAND_STRING
         cmd.payloadLen = len;
 
-        // 👇 Передаём стабильный буфер
+        // Передаём стабильный буфер
         loraComm->sendPacketBase(BOAT_DEVICE_ID, cmd, tempBuf);
         
-        // 🚀 FIX: Увеличиваем счётчик отправленных пакетов
+        // Увеличиваем счётчик отправленных пакетов
         if (hasValidBoatStatus) {
             lastBoatStatus.lora.packetsSent++;
         }
@@ -180,7 +172,7 @@ public:
     
     void sendPingToBoat()
     {
-        PacketPing ping{}; // конструктор автоматически установит packetType = CMD_PING
+        PacketPing ping{}; // packetType = CMD_PING
         loraComm->sendPacketBase(BOAT_DEVICE_ID, ping, nullptr, false);
     }
 
@@ -703,20 +695,27 @@ public:
         }
         else if (cmd == "demo") {
             // Quick demo commands - оптимизированная версия
-            addLog("[MC] Processing command: demo");
+            addLog("\n\n[MC] Processing command: demo");
             addLog("[MC] Running demo commands...");
             requestFullDiagnostics();
             addLog("[MC] 🔧 Sent diagnostic command: D:full");
-            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
+            vTaskDelay(pdMS_TO_TICKS(500));
             requestLoRaStatus();
             addLog("[MC] 📡 Sent LoRa command: L:status");
-            vTaskDelay(pdMS_TO_TICKS(500)); // Уменьшено с 2000 до 500ms
             sendNavigationCommand("status");
             addLog("[MC] Sent navigation command: N:status");
-            vTaskDelay(pdMS_TO_TICKS(800)); // Уменьшено с 2000 до 500ms
             sendPingCommand();
-            addLog("[MC] Ping sent");
+            addLog("[MC] Ping sent\n\n");
+            vTaskDelay(pdMS_TO_TICKS(500));
+            sendInfoRequest(CMD_TELEMETRY_FRAGMENT); // запросить телеметрию:
+            addLog("[MC] 📊 Requested telemetry fragment");
+            sendInfoRequest(CMD_INFO_ENGINE);        // запросить “InfoEngine”:
+            addLog("[MC] 🔧 Requested engine info");
+            sendInfoRequest(CMD_STATUS);             // запросить общий статус:
+            addLog("[MC] ✅ Requested general status");
+            vTaskDelay(pdMS_TO_TICKS(500));
             addLog("[MC] ✅ Demo complete");
+            vTaskDelay(pdMS_TO_TICKS(500));
         }
         else if (cmd == "SCAN") {
             // Spectrum scanning command
