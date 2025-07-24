@@ -52,7 +52,6 @@ struct PendingSend
 //     out.packetType = base.packetType;
 //     out.packetId = base.packetId;
 
-
 //     char debugBuf[100];
 
 //     if (base.payloadLen > MAX_LORA_PAYLOAD)
@@ -155,19 +154,19 @@ private:
             {
                 BULK_ACK_INTERVAL_MS = 1800; // Интервал BULK ACK для FSK
                 BULK_ACK_MAX_WAIT_MS = 1200; // Максимальное время ожидания BULK ACK
-                currentMaxRetries = 2; // Быстрые профили
+                currentMaxRetries = 2;       // Быстрые профили
             }
             else if (currentSF <= 9)
             {
                 BULK_ACK_INTERVAL_MS = 2500; // Интервал BULK ACK для FSK
                 BULK_ACK_MAX_WAIT_MS = 1500; // Максимальное время ожидания BULK ACK
-                currentMaxRetries = 3; // Средние профили
+                currentMaxRetries = 3;       // Средние профили
             }
             else
             {
                 BULK_ACK_INTERVAL_MS = 3000; // Интервал BULK ACK для FSK
                 BULK_ACK_MAX_WAIT_MS = 1800; // Максимальное время ожидания BULK ACK
-                currentMaxRetries = 4;      // Медленные но надежные профили
+                currentMaxRetries = 4;       // Медленные но надежные профили
             }
 
             char s[120];
@@ -424,8 +423,6 @@ private:
     }
 
 private:
-
-
     void packBaseIntoLoRa(LoRaPacket &out, uint8_t senderId, uint8_t receiverId,
                           const PacketBase &base, const uint8_t *payload)
     {
@@ -467,7 +464,7 @@ private:
             hex += "...";
         }
 
-        putToLogBuffer("📦 Packed packet: id=" + String(out.packetId) +", type=" + String(out.packetType) + ", len=" + String(out.payloadLen) + ", payload=[" + hex + "]");
+        putToLogBuffer("📦 Packed packet: id=" + String(out.packetId) + ", type=" + String(out.packetType) + ", len=" + String(out.payloadLen) + ", payload=[" + hex + "]");
     }
 
     void handleSingleAck(PacketId_t ackedId, uint8_t senderId, uint8_t packetType)
@@ -740,6 +737,18 @@ private:
             }
             uint32_t randomDelay = 19 + (esp_random() % 10);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
+            if (currentProfileIndex < 4)
+            {
+                if (currentProfileIndex < 2)
+                {
+                    randomDelay = 20 + (esp_random() % 50);
+                }
+                else
+                {
+                    randomDelay = 10 + (esp_random() % 25);
+                }
+                vTaskDelay(pdMS_TO_TICKS(randomDelay));
+            }
         }
     }
 
@@ -988,7 +997,6 @@ public:
         return removed;
     }
 
- 
     PacketId_t sendPacketBase(uint8_t receiverId, PacketBase &base, const uint8_t *payload, bool waitForAck = true)
     {
         if (!outgoingQueue)
@@ -1192,8 +1200,6 @@ public:
     }
 };
 
-
-
 // ENHANCED PROFILE APPLICATION
 inline bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
 {
@@ -1356,44 +1362,45 @@ inline String LoRaCore::getCurrentProfileInfo() const
     }
 }
 
-
-
-
-
-
 // -----------------------------------------------------------------------------
 // Утилиты ASA: отправка через экземпляр LoRaCore
 // -----------------------------------------------------------------------------
 
-inline PacketId_t sendAsaRequest(LoRaCore* loraCore, uint8_t profileIndex, uint8_t receiver) {
-    if (!loraCore) return 0;
+inline PacketId_t sendAsaRequest(LoRaCore *loraCore, uint8_t profileIndex, uint8_t receiver)
+{
+    if (!loraCore)
+        return 0;
     PacketAsaExchange pkt(CMD_REQUEST_ASA);
     pkt.setProfile(profileIndex);
-    
+
     // Create proper payload buffer instead of relying on memory layout
     uint8_t payload[1];
     payload[0] = pkt.profileIndex;
-    
-    loraCore->sendPacketBase(receiver, pkt, payload, true);  // waitForAck = true!
+
+    loraCore->sendPacketBase(receiver, pkt, payload, true); // waitForAck = true!
     return pkt.packetId;
 }
 
-inline PacketId_t sendAsaResponse(LoRaCore* loraCore, uint8_t profileIndex, uint8_t receiver) {
-    if (!loraCore) return 0;
+inline PacketId_t sendAsaResponse(LoRaCore *loraCore, uint8_t profileIndex, uint8_t receiver)
+{
+    if (!loraCore)
+        return 0;
     PacketAsaExchange pkt(CMD_REPOSNCE_ASA);
     pkt.setProfile(profileIndex);
-    
+
     // Create proper payload buffer instead of relying on memory layout
     uint8_t payload[1];
     payload[0] = pkt.profileIndex;
-    
+
     loraCore->sendPacketBase(receiver, pkt, payload, true);
     return pkt.packetId;
 }
 
 // Пример разбора входящего ASA пакета
-inline bool parseAsaPacket(const PacketBase& hdr, const uint8_t* buf, uint8_t& outProfileIndex) {
-    if (hdr.payloadLen != sizeof(uint8_t)) return false;
+inline bool parseAsaPacket(const PacketBase &hdr, const uint8_t *buf, uint8_t &outProfileIndex)
+{
+    if (hdr.payloadLen != sizeof(uint8_t))
+        return false;
     outProfileIndex = buf[0];
     return true;
 }

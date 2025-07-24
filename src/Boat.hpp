@@ -597,6 +597,7 @@ public:
         else
         {
             engine.update(); // Обновляем моторы даже в фейлсейфе, чтобы они остановились
+            flysky.getChannel(2); // Левый stick Y
         }
         checkFailsafeTransition();
 
@@ -605,7 +606,7 @@ public:
         // Проверяем, не нужно ли отправить накопленные ACK
         loraComm->processBulkAckTimeout(MISSION_CONTROL_ID);
 
-        // 🚀 NEW: Structured data transmission
+        //NEW: Structured data transmission
         // processStructuredDataTransmission();
 
         // Performance tracking
