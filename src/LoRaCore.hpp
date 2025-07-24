@@ -89,8 +89,8 @@ private:
     
     // Флаг активного приема - блокирует передачу
     volatile bool receivingInProgress = false;
-    uint8_t currentMaxRetries = 2;
-    uint32_t currentRetryTimeoutMs = 6200;
+    uint8_t currentMaxRetries = 4;
+    uint32_t currentRetryTimeoutMs = 3200;
     static const uint32_t FAST_TX_THRESHOLD_MS = 100;  // Быстрая передача < 100мс
     static const uint32_t SLOW_TX_THRESHOLD_MS = 1000; // Медленная передача > 1сек
     static const uint32_t QUEUE_FULL_RETRY_MS = 200;   // Повтор при заполненной очереди
@@ -114,8 +114,8 @@ private:
     // Система агрегированных ACK
     PacketBulkAck pendingBulkAck;
     unsigned long lastBulkAckTime = 0;
-    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 400; // 1 секунда
-    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 150; // Максимум 0.5 сек ожидания
+    static constexpr unsigned long BULK_ACK_INTERVAL_MS = 250;
+    static constexpr unsigned long BULK_ACK_MAX_WAIT_MS = 100;
 
     // Получить следующий ID пакета (только для внутреннего использования)
     PacketId_t getNextPacketId() {
@@ -611,7 +611,7 @@ private:
         while (true)
         {
             LoRaPacket pkt = {};
-            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(25)) == pdTRUE)
+            if (xQueueReceive(outgoingQueue, &pkt, pdMS_TO_TICKS(5)) == pdTRUE)
             {
                 // КРИТИЧНО: Проверяем флаг активного приема
                 // Если идет прием - НЕ ПЕРЕДАЕМ, возвращаем пакет в очередь
@@ -680,7 +680,7 @@ private:
                 if (radioSemaphore)
                     xSemaphoreGive(radioSemaphore);
             }
-            uint32_t randomDelay = 10 + (esp_random() % 10);
+            uint32_t randomDelay = 19 + (esp_random() % 10);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
@@ -691,7 +691,7 @@ private:
         while (true)
         {
             uint32_t now = millis();
-            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(250)) == pdTRUE) // Потокобезопасный доступ к pending
+            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(1500)) == pdTRUE) // Потокобезопасный доступ к pending
             {
                 for (auto it = pending.begin(); it != pending.end();)
                 {
@@ -699,7 +699,7 @@ private:
                     {
                         if (it->retries < currentMaxRetries)
                         {
-                            if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(500)) == pdTRUE)
+                            if (xQueueSendToBack(outgoingQueue, &it->pkt, pdMS_TO_TICKS(1500)) == pdTRUE)
                             {
                                 it->timestamp = now;
                                 it->retries++;
@@ -729,7 +729,7 @@ private:
                 }
                 xSemaphoreGive(pendingMutex);
             }
-            uint32_t randomDelay = 100 + (esp_random() % 100);
+            uint32_t randomDelay = 211 + (esp_random() % 100);
             vTaskDelay(pdMS_TO_TICKS(randomDelay));
         }
     }
@@ -912,7 +912,7 @@ public:
             return false;
 
         bool removed = false;
-        if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE)
+        if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(200)) == pdTRUE)
         {
             auto it = std::find_if(pending.begin(), pending.end(), [packetId](const PendingSend &p)
                                    { return p.pkt.packetId == packetId; });
@@ -946,7 +946,7 @@ public:
         if (ok && waitForAck)
         {
             // Потокобезопасное добавление в pending с проверкой дублированных ID
-            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE)
+            if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(1100)) == pdTRUE)
             {
                 // Проверяем, нет ли уже пакета с таким ID в pending списке
                 auto existingIt = std::find_if(pending.begin(), pending.end(),
@@ -1020,7 +1020,7 @@ public:
         if (!pendingMutex)
             return 0;
         size_t count = 0;
-        if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(10)) == pdTRUE)
+        if (xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(5)) == pdTRUE)
         {
             count = pending.size();
             xSemaphoreGive(pendingMutex);
@@ -1030,7 +1030,7 @@ public:
 
     void clearPending()
     {
-        if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(100)) == pdTRUE)
+        if (pendingMutex && xSemaphoreTake(pendingMutex, pdMS_TO_TICKS(1100)) == pdTRUE)
         {
             pending.clear();
             xSemaphoreGive(pendingMutex);
@@ -1148,7 +1148,7 @@ inline bool LoRaCore::applyProfileFromSettings(uint8_t profileIndex)
 
     const auto &profile = loraProfiles[profileIndex];
 
-    if (radioSemaphore && xSemaphoreTake(radioSemaphore, pdMS_TO_TICKS(1000)) == pdTRUE)
+    if (radioSemaphore && xSemaphoreTake(radioSemaphore, pdMS_TO_TICKS(3000)) == pdTRUE)
     {
         radio.standby();
 

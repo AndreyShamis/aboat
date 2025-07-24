@@ -107,7 +107,7 @@ enum CommandType : uint8_t
 
 
 #define LORA_INCOMING_QUEUE_SIZE 25
-#define LORA_OUTGOING_QUEUE_SIZE 25
+#define LORA_OUTGOING_QUEUE_SIZE 15
 
 #ifdef HW_HELTEC
   #define I2C_SDA 21
