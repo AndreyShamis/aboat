@@ -40,35 +40,6 @@ struct PendingSend
     uint8_t retries;
 };
 
-// // ─────────────────────────────────────────────────────────────────────────────
-// // HELPER FUNCTIONS
-// // ─────────────────────────────────────────────────────────────────────────────
-// inline void packBaseIntoLoRa(LoRaPacket &out, uint8_t senderId, uint8_t receiverId,
-//                              const PacketBase &base, const uint8_t *payload)
-// {
-//     memset(&out, 0, sizeof(out));
-//     out.setSenderId(senderId);
-//     out.setReceiverId(receiverId);
-//     out.packetType = base.packetType;
-//     out.packetId = base.packetId;
-
-//     char debugBuf[100];
-
-//     if (base.payloadLen > MAX_LORA_PAYLOAD)
-//     {
-//         out.payloadLen = 0;
-//         snprintf(debugBuf, sizeof(debugBuf), "❌ packBase: Invalid payloadLen=%u > MAX=%u", base.payloadLen, MAX_LORA_PAYLOAD);
-//         Serial.println(debugBuf);
-//     }
-//     else
-//     {
-//         out.payloadLen = base.payloadLen;
-//         if (base.payloadLen > 0 && payload != nullptr)
-//         {
-//             memcpy(out.payload, payload, base.payloadLen);
-//         }
-//     }
-// }
 
 class LoRaCore
 {

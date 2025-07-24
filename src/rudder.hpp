@@ -46,7 +46,7 @@ public:
         servo.setPeriodHertz(50);          // 50 Hz PWM for servo
         servo.attach(_pin, 1000, 2000);    // Attach servo control (min 1000µs, max 2000µs)
         // Do not call setAngle here; servo will initialize at default position (90°).
-        Serial.println("Rudder initialized");
+        Serial.println("[RUDDER] Initialized");
     }
     void disable()
     {
@@ -91,7 +91,7 @@ public:
                 {
                     writeMicroseconds(_currentPwm);
                     _lastPwm = _currentPwm;
-                    // Serial.printf("[PWM] RUD: %d - Tar: %d\n", _currentPwm, _targetPwm);
+                    Serial.printf("[PWM] RUD: %d - Tar: %d\n", _currentPwm, _targetPwm);
                 }
             }
         }

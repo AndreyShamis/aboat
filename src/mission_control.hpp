@@ -1059,7 +1059,7 @@ private:
             {
                 // 🚀 NEW: Проверяем RSSI пульта - игнорируем при плохом сигнале
                 float currentRssi = loraComm->getRadio().getRSSI();
-                if (currentRssi < -120.0f) {
+                if (currentRssi < -120.0f && profileIndex > 0) {
                     addLog("2 [MC] 🚫 Ignoring CMD_REQUEST_ASA - RSSI too low: " + String(currentRssi, 1) + "dBm");
                     break; // Игнорируем запрос при плохом RSSI
                 }
@@ -1074,7 +1074,11 @@ private:
                 addLog("4 [MC] ASA Response received, applying profile index " + String(profileIndex));
             }
             uint8_t loopCounter = 0;
-            while ((loraComm->getOutgoingQueueCount() > 0 || loraComm->getPendingCount() > 0) && loopCounter++ < 5) {
+            uint8_t maxLoopCount = 10;
+            if(loraComm->getCurrentProfileIndex() < 3){
+                maxLoopCount = 20;
+            }
+            while ((loraComm->getOutgoingQueueCount() > 0 || loraComm->getPendingCount() > 0) && loopCounter++ < maxLoopCount) {
                 vTaskDelay(pdMS_TO_TICKS(500));
             }
             applyProfile(profileIndex);
